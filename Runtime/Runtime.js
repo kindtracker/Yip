@@ -14,13 +14,27 @@ function RewriteUrl(Url) {
   return `${ProxyAddress}/${Url}`;
 }
 
-function RewriteElement(Element) {
-  if (Element.href) {
-    Element.href = RewriteUrl(Element.href);
+function RewriteUrlProperty(Element, PropertyName) {
+  const Property = Element[PropertyName];
+  if (Property) {
+    Element[PropertyName] = RewriteUrl(Property);
   }
+}
 
-  Element.querySelectorAll?.("[href]").forEach((Child) => {
-    Child.href = RewriteUrl(Child.href);
+function RewriteElement(Element) {
+  RewriteUrlProperty(Element, "href");
+  RewriteUrlProperty(Element, "action");
+  RewriteUrlProperty(Element, "formaction");
+  RewriteUrlProperty(Element, "formaction");
+  RewriteUrlProperty(Element, "src");
+  RewriteUrlProperty(Element, "srcset");
+  RewriteUrlProperty(Element, "srcdoc");
+  RewriteUrlProperty(Element, "data");
+  RewriteUrlProperty(Element, "poster");
+  RewriteUrlProperty(Element, "cite");
+
+  Element.childNodes.forEach((Child) => {
+    RewriteElement(Child);
   });
 }
 const Observer = new MutationObserver((MutationsList) => {
