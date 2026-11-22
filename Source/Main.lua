@@ -6,6 +6,7 @@ local Server = assert(LuaSocket.tcp4())
 local HostConnections = {}
 local Logger = {}
 
+local RuntimeCode = '<script src="/Runtime.js"></script>'
 local ProxyHost = "localhost"
 local ProxyPort = 8000
 local ProxyAddress = "http://" .. ProxyHost .. ":" .. ProxyPort
@@ -69,11 +70,9 @@ local function SendAll(Socket, Data)
   while Index <= #Data do
     local Sent, Error, Partial = Socket:send(Data, Index)
 
-    if Sent then
-      Index = Sent + 1
-    elseif Partial then
-      Index = Partial + 1
-    else
+    Index = (Sent or Partial or (Index - 1)) + 1
+
+    if not Sent and Index == 1 then
       return nil, Error
     end
   end
@@ -265,7 +264,7 @@ local function CreateBackend(Destination)
   return Backend
 end
 
-local function GetBackend(Destination)
+local function GetBackend(Destination, Client)
   local Key = Destination.Scheme .. "://" .. Destination.Host .. ":" .. Destination.Port
 
   local Backend = HostConnections[Key]
@@ -303,10 +302,29 @@ local function CloseBackend(Key)
   end
 end
 
+local function ReadExact(Source, Count)
+  local Buffer = {}
+
+  while Count > 0 do
+    local Data, Error, Partial = Source:receive(math.min(4096, Count))
+    Data = Data or Partial
+
+    if Data and #Data > 0 then
+      Buffer[#Buffer + 1] = Data
+      Count = Count - #Data
+    end
+
+    if Error then
+      return nil, Error
+    end
+  end
+
+  return table.concat(Buffer)
+end
+
 local function ForwardExact(Source, Destination, Count)
   while Count > 0 do
     local Data, Error, Partial = Source:receive(math.min(4096, Count))
-
     Data = Data or Partial
 
     if Data and #Data > 0 then
@@ -328,6 +346,8 @@ local function ForwardExact(Source, Destination, Count)
 end
 
 local function ForwardChunked(Source, Destination)
+  local Buffer = {}
+
   while true do
     local Line, Error = Source:receive("*l")
 
@@ -335,11 +355,7 @@ local function ForwardChunked(Source, Destination)
       return nil, Error
     end
 
-    local Success, SendError = SendAll(Destination, Line .. "\r\n")
-
-    if not Success then
-      return nil, SendError
-    end
+    Buffer[#Buffer + 1] = Line .. "\r\n"
 
     local HexSize = Line:match("^%s*([%da-fA-F]+)")
     local Size = HexSize and tonumber(HexSize, 16)
@@ -356,23 +372,21 @@ local function ForwardChunked(Source, Destination)
           return nil, TrailerError
         end
 
-        Success, SendError = SendAll(Destination, Trailer .. "\r\n")
-
-        if not Success then
-          return nil, SendError
-        end
+        Buffer[#Buffer + 1] = Trailer .. "\r\n"
 
         if Trailer == "" then
-          return true
+          return SendAll(Destination, table.concat(Buffer))
         end
       end
     end
 
-    Success, SendError = ForwardExact(Source, Destination, Size)
+    local Data, DataError = ReadExact(Source, Size)
 
-    if not Success then
-      return nil, SendError
+    if not Data then
+      return nil, DataError
     end
+
+    Buffer[#Buffer + 1] = Data
 
     local CRLF, CRLFError = Source:receive(2)
 
@@ -380,31 +394,28 @@ local function ForwardChunked(Source, Destination)
       return nil, CRLFError
     end
 
-    Success, SendError = SendAll(Destination, CRLF)
-
-    if not Success then
-      return nil, SendError
+    if CRLF ~= "\r\n" then
+      return nil, "Invalid chunk delimiter"
     end
+
+    Buffer[#Buffer + 1] = CRLF
   end
 end
 
 local function ForwardUntilClose(Source, Destination)
+  local Buffer = {}
+
   while true do
     local Data, Error, Partial = Source:receive(4096)
-
     Data = Data or Partial
 
     if Data and #Data > 0 then
-      local Success, SendError = SendAll(Destination, Data)
-
-      if not Success then
-        return nil, SendError
-      end
+      Buffer[#Buffer + 1] = Data
     end
 
     if Error then
       if Error == "closed" then
-        return true
+        return SendAll(Destination, table.concat(Buffer))
       end
 
       return nil, Error
@@ -453,12 +464,16 @@ local function ReadResponseHeaders(Backend)
   return Headers
 end
 
+local function RewriteUrl(Url)
+  return Url:gsub("^(https?://.+)$", ProxyAddress .. "/%1")
+end
+
 local function RewriteLocation(Headers)
   if not Headers.Location then
     return
   end
 
-  Headers.Location = Headers.Location:gsub("^(https?://.+)$", ProxyAddress .. "/%1")
+  Headers.Location = RewriteUrl(Headers.Location)
 end
 
 local function ReconstructResponse(Headers)
@@ -484,6 +499,19 @@ local function ReconstructResponse(Headers)
   return table.concat(Response)
 end
 
+local function InjectRuntime(Body)
+  if Body:find("Runtime.js", 1, true) then
+    return Body
+  end
+
+  local Result, Count = Body:gsub("</head%s*>", RuntimeCode .. "%0", 1)
+  if Count == 0 then
+    Result = RuntimeCode .. Body
+  end
+
+  return Result
+end
+
 local function ForwardResponse(Backend, Client, Method)
   local Headers, Error = ReadResponseHeaders(Backend)
 
@@ -491,8 +519,11 @@ local function ForwardResponse(Backend, Client, Method)
     return nil, Error
   end
 
-  RewriteLocation(Headers)
+  if Headers.ContentLength then
+    Headers.ContentLength = tostring(tonumber(Headers.ContentLength) + #RuntimeCode)
+  end
 
+  RewriteLocation(Headers)
   local Response = ReconstructResponse(Headers)
 
   local Success
@@ -503,17 +534,13 @@ local function ForwardResponse(Backend, Client, Method)
   end
 
   local Status = Headers.Status
-
   local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
-
   if not HasBody then
     return true
   end
 
   local TransferEncoding = (Headers.TransferEncoding or ""):lower()
-
   local ContentLength = tonumber(Headers.ContentLength)
-
   if TransferEncoding:match("chunked") then
     return ForwardChunked(Backend, Client)
   elseif ContentLength then
@@ -572,7 +599,7 @@ local function HandleClient(Client)
     Headers.HttpVersion
   )
 
-  local Backend, Key = GetBackend(Destination)
+  local Backend, Key = GetBackend(Destination, Client)
 
   if not Backend then
     Logger:Error("%s connection failed: %s", Destination.Host, Key)
