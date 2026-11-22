@@ -322,30 +322,28 @@ local function ReadExact(Source, Count)
   return table.concat(Buffer)
 end
 
-local function ForwardExact(Source, Destination, Count)
-  while Count > 0 do
-    local Data, Error, Partial = Source:receive(math.min(4096, Count))
+local function ReadUntilClose(Source)
+  local Buffer = {}
+
+  while true do
+    local Data, Error, Partial = Source:receive(4096)
     Data = Data or Partial
 
     if Data and #Data > 0 then
-      local Success, SendError = SendAll(Destination, Data)
-
-      if not Success then
-        return nil, SendError
-      end
-
-      Count = Count - #Data
+      Buffer[#Buffer + 1] = Data
     end
 
     if Error then
+      if Error == "closed" then
+        return table.concat(Buffer)
+      end
+
       return nil, Error
     end
   end
-
-  return true
 end
 
-local function ForwardChunked(Source, Destination)
+local function ReadChunked(Source)
   local Buffer = {}
 
   while true do
@@ -375,7 +373,7 @@ local function ForwardChunked(Source, Destination)
         Buffer[#Buffer + 1] = Trailer .. "\r\n"
 
         if Trailer == "" then
-          return SendAll(Destination, table.concat(Buffer))
+          return table.concat(Buffer)
         end
       end
     end
@@ -400,27 +398,8 @@ local function ForwardChunked(Source, Destination)
 
     Buffer[#Buffer + 1] = CRLF
   end
-end
 
-local function ForwardUntilClose(Source, Destination)
-  local Buffer = {}
-
-  while true do
-    local Data, Error, Partial = Source:receive(4096)
-    Data = Data or Partial
-
-    if Data and #Data > 0 then
-      Buffer[#Buffer + 1] = Data
-    end
-
-    if Error then
-      if Error == "closed" then
-        return SendAll(Destination, table.concat(Buffer))
-      end
-
-      return nil, Error
-    end
-  end
+  return table.concat(Buffer)
 end
 
 local function ReadResponseHeaders(Backend)
@@ -541,13 +520,21 @@ local function ForwardResponse(Backend, Client, Method)
 
   local TransferEncoding = (Headers.TransferEncoding or ""):lower()
   local ContentLength = tonumber(Headers.ContentLength)
+  local Buffer, Error
+
   if TransferEncoding:match("chunked") then
-    return ForwardChunked(Backend, Client)
+    Buffer, Error = ReadChunked(Backend)
   elseif ContentLength then
-    return ForwardExact(Backend, Client, ContentLength)
+    Buffer, Error = ReadExact(Backend, ContentLength)
   else
-    return ForwardUntilClose(Backend, Client), "close"
+    Buffer, Error = ReadUntilClose(Backend)
   end
+
+  if not Buffer then
+    return nil, Error
+  end
+
+  return Buffer, Error
 end
 
 local function HandleClient(Client)
