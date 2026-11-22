@@ -6,7 +6,7 @@ local Logger = {}
 function Logger:Log(...)
 	io.stdout:flush()
 	io.stderr:write("\27[1;37mYip:\27[0m ")
-	io.stderr:write("\27[34mInfo:\27[0m ")
+	io.stderr:write("\27[1;34mInfo:\27[0m ")
 	io.stderr:write(string.format(...))
 	io.stderr:write("\n")
 end
@@ -17,6 +17,31 @@ function Logger:Error(...)
 	io.stderr:write("\27[1;31mError:\27[0m ")
 	io.stderr:write(string.format(...))
 	io.stderr:write("\n")
+end
+
+function Logger:FatalError(...)
+	io.stdout:flush()
+	io.stderr:write("\27[1;37mYip:\27[0m ")
+	io.stderr:write("\27[1;31mFatal Error:\27[0m ")
+	io.stderr:write(string.format(...))
+	io.stderr:write("\n")
+	os.exit(1)
+end
+
+function Logger:Assert(Result, ...)
+	if not Result then
+		self:Error(...)
+	end
+
+	return Result
+end
+
+function Logger:FatalAssert(Result, ...)
+	if not Result then
+		self:FatalError(...)
+	end
+
+	return Result
 end
 
 function Logger:PrintTable(Table, Indent, Seen)
@@ -76,12 +101,12 @@ function string:pascalcase()
 end
 
 local Success, Error = Server:setoption("reuseaddr", true)
-assert(Success, Error)
+Logger:FatalAssert(Success, Error)
 
-assert(Server:bind("127.0.0.1", 8000))
-assert(Server:listen())
+Logger:FatalAssert(Server:bind("127.0.0.1", 8000))
+Logger:FatalAssert(Server:listen())
 
-print("Server is listening on http://localhost:8000/")
+Logger:Log("Server is listening on http://localhost:8000/")
 
 while true do
 	local Client = assert(Server:accept())
