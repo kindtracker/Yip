@@ -268,8 +268,6 @@ Logger:Log("Server is listening on http://localhost:8000/")
 while true do
   local Client = assert(Server:accept())
 
-  Logger:Log("Client connected")
-
   local Headers = {}
   local HeaderText = ""
   local First = true
@@ -309,8 +307,6 @@ while true do
     Headers.Path = "/" .. Headers.Path
   end
 
-  Logger:PrintTable(Headers)
-
   local IncomingPath = Headers.Path
   local TargetUrl = IncomingPath:match("^/(https?://.+)$")
 
@@ -335,6 +331,18 @@ while true do
 
   Headers.Path = Path
   Headers.Host = Host
+
+  if Headers.OriginalPath:match("^/https?://") then
+    Headers.OriginalPath = Headers.OriginalPath:sub(2)
+  end
+  Logger:Log(
+    "%s %s -> http://%s%s [%s]",
+    Headers.Method,
+    Headers.OriginalPath,
+    Headers.Host,
+    Headers.Path,
+    Headers.HttpVersion
+  )
 
   local Port = 80
   local Backend
