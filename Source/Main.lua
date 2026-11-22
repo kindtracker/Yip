@@ -240,7 +240,6 @@ local function CreateBackend(Destination)
       protocol = "any",
       verify = "peer",
       options = "all",
-      server = Destination.Host,
       cafile = os.getenv("SSL_CERT_FILE") or "/etc/ssl/certs/ca-certificates.crt",
       capath = os.getenv("SSL_CERT_DIR") or "/etc/ssl/certs",
     })
@@ -251,6 +250,7 @@ local function CreateBackend(Destination)
     end
 
     TLSBackend:settimeout(10)
+    TLSBackend:sni(Destination.Host)
 
     Success, Error = TLSBackend:dohandshake()
 
@@ -271,9 +271,9 @@ local function GetBackend(Destination)
   local Backend = HostConnections[Key]
 
   if Backend then
-    local IP = Backend:getpeername()
+    local Data, Error = Client:settimeout(0.0001)
 
-    if IP then
+    if not Error then
       return Backend, Key
     end
 
