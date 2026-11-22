@@ -1,7 +1,7 @@
 local LuaSocket = require("socket")
 local Server = assert(LuaSocket.tcp4())
 
-local Clients = {}
+local HostConnections = {}
 local Logger = {}
 
 function Logger:Log(...)
@@ -157,6 +157,106 @@ local function GetHostFromUrl(Url)
   return Host, Path
 end
 
+local function SendAll(Socket, Data)
+  local Index = 1
+
+  while Index <= #Data do
+    local Sent, Error, Partial = Socket:send(Data, Index)
+
+    Index = (Sent or Partial or Index - 1) + 1
+
+    if Error then
+      return nil, Error
+    end
+  end
+
+  return true
+end
+
+local function ForwardExact(Source, Destination, Count)
+  while Count > 0 do
+    local Data, Error, Partial = Source:receive(math.min(4096, Count))
+    Data = Data or Partial
+
+    if Data and #Data > 0 then
+      local Success, SendError = SendAll(Destination, Data)
+
+      if not Success then
+        return nil, SendError
+      end
+
+      Count = Count - #Data
+    end
+
+    if Error then
+      return nil, Error
+    end
+  end
+
+  return true
+end
+
+local function ForwardChunked(Source, Destination)
+  while true do
+    local Line, Error = Source:receive("*l")
+
+    if not Line then
+      return nil, Error
+    end
+
+    local Success, SendError = SendAll(Destination, Line .. "\r\n")
+
+    if not Success then
+      return nil, SendError
+    end
+
+    local HexSize = Line:match("^%s*([%da-fA-F]+)")
+    local Size = HexSize and tonumber(HexSize, 16)
+
+    if not Size then
+      return nil, "Invalid chunk size"
+    end
+
+    if Size == 0 then
+      while true do
+        local Trailer, TrailerError = Source:receive("*l")
+
+        if not Trailer then
+          return nil, TrailerError
+        end
+
+        Success, SendError = SendAll(Destination, Trailer .. "\r\n")
+
+        if not Success then
+          return nil, SendError
+        end
+
+        if Trailer == "" then
+          return true
+        end
+      end
+    end
+
+    Success, SendError = ForwardExact(Source, Destination, Size)
+
+    if not Success then
+      return nil, SendError
+    end
+
+    local CRLF, CRLFError = Source:receive(2)
+
+    if not CRLF then
+      return nil, CRLFError
+    end
+
+    Success, SendError = SendAll(Destination, CRLF)
+
+    if not Success then
+      return nil, SendError
+    end
+  end
+end
+
 local Success, Error = Server:setoption("reuseaddr", true)
 Logger:FatalAssert(Success, Error)
 
@@ -190,15 +290,11 @@ while true do
       Headers.Method = Parts[1]
       Headers.Path = Parts[2]
       Headers.HttpVersion = Parts[3]
-
-      if Headers.Path:sub(-1) == "/" then
-        Headers.Path = Headers.Path .. "index.html"
-      end
     end
 
-    local Parts = Message:split(": ")
-    if Parts[1] and Parts[2] then
-      Headers[Parts[1]:pascalcase()] = Parts[2]
+    local Name, Value = Message:match("^([^:]+):%s*(.*)$")
+    if Name then
+      Headers[Name:pascalcase()] = Value
     end
 
     First = false
@@ -207,7 +303,7 @@ while true do
   Headers.ProxyPath = Headers.Path:sub(2)
   Headers.OriginalPath = Headers.Path
   Headers.Path = Headers.ProxyPath
-  Headers.Connection = "close"
+  Headers.Connection = "keep-alive"
 
   if Headers.Path:sub(1, 1) ~= "/" then
     Headers.Path = "/" .. Headers.Path
@@ -237,19 +333,41 @@ while true do
     goto continue
   end
 
-  Headers.OriginalPath = IncomingPath
   Headers.Path = Path
   Headers.Host = Host
-  Headers.Connection = "close"
 
-  local Backend = Logger:FatalAssert(LuaSocket.tcp4())
-  Backend:settimeout(5)
+  local Port = 80
+  local Backend
 
-  local Success, Error = Backend:connect(Host, 80)
-  if not Success then
-    Logger:Error("%s connection failed: %s", Host, Error)
-    Client:close()
-    return
+  while true do
+    Backend = (HostConnections[Port] or {})[Host]
+
+    if Backend then
+      local IP = Backend:getpeername()
+
+      if IP then
+        break
+      end
+
+      Backend:close()
+      HostConnections[Port][Host] = nil
+    end
+
+    Backend = Logger:FatalAssert(LuaSocket.tcp4())
+    Backend:settimeout(5)
+
+    local Success, Error = Backend:connect(Host, Port)
+    if not Success then
+      Logger:Error("%s connection failed: %s", Host, Error)
+      Backend:close()
+      Client:close()
+      return
+    end
+
+    HostConnections[Port] = HostConnections[Port] or {}
+    HostConnections[Port][Host] = Backend
+
+    break
   end
 
   local HeaderText = ReconstructRequest(Headers)
@@ -262,25 +380,83 @@ while true do
     return
   end
 
+  local ResponseHeaders = {}
+  local First = true
+
   while true do
-    local Data, Error, Partial = Backend:receive("*a")
-    Data = Data or Partial
+    local Line, Error = Backend:receive("*l")
 
-    if Data and #Data > 0 then
-      local Sent, SendError = Client:send(Data)
-
-      if not Sent then
-        Logger:Error("Client send failed: %s", SendError)
-        break
-      end
+    if not Line then
+      Logger:Error("Failed to read response headers: %s", Error)
+      break
     end
 
-    if Error then
+    if Line == "" then
       break
+    end
+
+    if First then
+      ResponseHeaders.StatusLine = Line
+      First = false
+    else
+      local Name, Value = Line:match("^([^:]+):%s*(.*)$")
+
+      if Name then
+        ResponseHeaders[Name:pascalcase()] = Value
+      end
     end
   end
 
-  Backend:close()
+  local Response = {
+    ResponseHeaders.StatusLine .. "\r\n",
+  }
+
+  for Name, Value in pairs(ResponseHeaders) do
+    if Name ~= "StatusLine" then
+      table.insert(Response, Name:kebabcase() .. ": " .. Value .. "\r\n")
+    end
+  end
+
+  table.insert(Response, "\r\n")
+
+  Client:send(table.concat(Response))
+
+  local TransferEncoding = (ResponseHeaders.TransferEncoding or ""):lower()
+  local ContentLength = tonumber(ResponseHeaders.ContentLength)
+
+  local Status = tonumber(ResponseHeaders.StatusLine:match("^%S+%s+(%d%d%d)"))
+
+  local HasBody = Headers.Method ~= "HEAD"
+    and Status ~= 204
+    and Status ~= 304
+    and not (Status and Status >= 100 and Status < 200)
+
+  if HasBody then
+    if TransferEncoding:match("chunked") then
+      local Success, Error = ForwardChunked(Backend, Client)
+
+      if not Success then
+        Logger:Error("Failed to forward chunked response: %s", Error)
+      end
+    elseif ContentLength then
+      local Success, Error = ForwardExact(Backend, Client, ContentLength)
+
+      if not Success then
+        Logger:Error("Failed to forward response body: %s", Error)
+      end
+    else
+      Logger:Error("Unsupported response body framing")
+      Backend:close()
+      HostConnections[Port][Host] = nil
+    end
+  end
+
+  local Ip = Backend:getpeername()
+  if not Ip then
+    Backend:close()
+    HostConnections[Port][Host] = nil
+  end
+
   Client:close()
 
   ::continue::
