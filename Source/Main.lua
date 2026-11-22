@@ -1,6 +1,7 @@
 local LuaSocket = require("socket")
 local Server = assert(LuaSocket.tcp4())
 
+local Clients = {}
 local Logger = {}
 
 function Logger:Log(...)
@@ -131,6 +132,31 @@ local function ReconstructRequest(Headers)
   return table.concat(Request)
 end
 
+local function RewriteReferer(Referer)
+  if not Referer then
+    return nil
+  end
+
+  local URL = Referer:match("^https?://[^/]+/(https?://.*)$")
+
+  if not URL then
+    return Referer
+  end
+
+  return URL
+end
+
+local function GetHostFromUrl(Url)
+  local Host, Path = Url:match("^https?://([^/]+)(/.*)$")
+
+  if not Host then
+    Host = Url:match("^https?://([^/]+)")
+    Path = "/"
+  end
+
+  return Host, Path
+end
+
 local Success, Error = Server:setoption("reuseaddr", true)
 Logger:FatalAssert(Success, Error)
 
@@ -181,6 +207,7 @@ while true do
   Headers.ProxyPath = Headers.Path:sub(2)
   Headers.OriginalPath = Headers.Path
   Headers.Path = Headers.ProxyPath
+  Headers.Connection = "close"
 
   Logger:PrintTable(Headers)
 
@@ -189,7 +216,23 @@ while true do
   local Backend = Logger:FatalAssert(LuaSocket.tcp4())
   Backend:settimeout(5)
 
-  local Host = Headers.Path:match("^https?://([^/]+)")
+  local Url = Headers.Path
+  local Host, Path = GetHostFromUrl(Url)
+
+  if not Host and Headers.Referer then
+    local RefererUrl = RewriteReferer(Headers.Referer)
+    Host = RefererUrl and GetHostFromUrl(RefererUrl)
+    Path = Url
+  end
+
+  if not Host then
+    Logger:Error("Could not determine destination host from %s", Headers.Path)
+    Client:close()
+    goto continue
+  end
+
+  print(Host, Path)
+
   local Success, Error = Backend:connect(Host, 80)
   if not Success then
     Logger:Error("%s connection failed: %s", Host, Error)
@@ -197,13 +240,16 @@ while true do
     return
   end
 
-  Backend:send(HeaderText)
-  if not Success then
-    Logger:Error("Failed to send request to destination server: %s", Error)
+  local Sent, SendError = Backend:send(HeaderText)
+  if not Sent then
+    Logger:Error("Failed to send request: %s", SendError)
+    Backend:close()
+    Client:close()
+    return
   end
 
   while true do
-    local Data, Error, Partial = Backend:receive(4096)
+    local Data, Error, Partial = Backend:receive("*a")
     Data = Data or Partial
 
     if Data and #Data > 0 then
@@ -222,4 +268,6 @@ while true do
 
   Backend:close()
   Client:close()
+
+  ::continue::
 end
