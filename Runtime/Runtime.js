@@ -5,3 +5,5 @@ const ProxyAddress = `http://${ProxyHost}:${ProxyPort}`;
 function RewriteUrl(url) {
   return url.replace(/^(https?:\/\/.+)$/, `${ProxyAddress}/$1`);
 }
+
+console.log("meow");

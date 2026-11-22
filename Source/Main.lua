@@ -8,7 +8,7 @@ local Server = assert(LuaSocket.tcp4())
 local HostConnections = {}
 local Logger = {}
 
-local RuntimeCode = '<script src="/Runtime.js"></script>'
+local RuntimeCode = '<script src="/_yip_runtime.js?_yip=true"></script>'
 local ProxyHost = "localhost"
 local ProxyPort = 8000
 local ProxyAddress = "http://" .. ProxyHost .. ":" .. ProxyPort
@@ -591,6 +591,28 @@ local function ForwardResponse(Backend, Client, Method)
   return SendAll(Client, Body)
 end
 
+local function SendRuntime(Client)
+  local FilePtr, Error = io.open("Runtime/Runtime.js", "rb")
+  if not FilePtr then
+    return SendErrorResponse(Client, "500 Internal Server Error", Error)
+  end
+
+  local Runtime = FilePtr:read("*a")
+  FilePtr:close()
+
+  local Response = string.format(
+    "HTTP/1.1 200 OK\r\n"
+      .. "Content-Type: text/javascript; charset=utf-8\r\n"
+      .. "Content-Length: %d\r\n"
+      .. "Connection: close\r\n"
+      .. "\r\n%s",
+    #Runtime,
+    Runtime
+  )
+
+  return SendAll(Client, Response)
+end
+
 local function HandleClient(Client)
   Client:settimeout(10)
 
@@ -628,6 +650,16 @@ local function HandleClient(Client)
 
   if DisplayPath:match("^/https?://") then
     DisplayPath = DisplayPath:sub(2)
+  end
+
+  if Headers.OriginalPath == "/_yip_runtime.js?_yip=true" then
+    local _, Error = SendRuntime(Client)
+    if Error then
+      Logger:Error("Failed to send runtime: %s", Error)
+    end
+
+    Client:close()
+    return
   end
 
   Logger:Log(
