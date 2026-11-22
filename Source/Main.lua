@@ -102,6 +102,35 @@ function string:pascalcase()
     :gsub("[^%w]", "")
 end
 
+function string:kebabcase()
+  return self
+    :gsub("%u", function(Character)
+      return "-" .. Character:lower()
+    end)
+    :gsub("^-", "")
+end
+
+local function ReconstructRequest(Headers)
+  local Request = {}
+
+  table.insert(Request, Headers.Method .. " " .. Headers.Path .. " " .. Headers.HttpVersion .. "\r\n")
+
+  for Name, Value in pairs(Headers) do
+    if
+      Name ~= "Method"
+      and Name ~= "Path"
+      and Name ~= "OriginalPath"
+      and Name ~= "ProxyPath"
+      and Name ~= "HttpVersion"
+    then
+      table.insert(Request, Name:kebabcase() .. ": " .. Value .. "\r\n")
+    end
+  end
+
+  table.insert(Request, "\r\n")
+  return table.concat(Request)
+end
+
 local Success, Error = Server:setoption("reuseaddr", true)
 Logger:FatalAssert(Success, Error)
 
@@ -116,6 +145,7 @@ while true do
   Logger:Log("Client connected")
 
   local Headers = {}
+  local HeaderText = ""
   local First = true
   while true do
     local Message, Error = Client:receive("*l")
@@ -148,7 +178,48 @@ while true do
     First = false
   end
 
+  Headers.ProxyPath = Headers.Path:sub(2)
+  Headers.OriginalPath = Headers.Path
+  Headers.Path = Headers.ProxyPath
+
   Logger:PrintTable(Headers)
 
+  local HeaderText = ReconstructRequest(Headers)
+
+  local Backend = Logger:FatalAssert(LuaSocket.tcp4())
+  Backend:settimeout(5)
+
+  local Host = Headers.Path:match("^https?://([^/]+)")
+  local Success, Error = Backend:connect(Host, 80)
+  if not Success then
+    Logger:Error("%s connection failed: %s", Host, Error)
+    Client:close()
+    return
+  end
+
+  Backend:send(HeaderText)
+  if not Success then
+    Logger:Error("Failed to send request to destination server: %s", Error)
+  end
+
+  while true do
+    local Data, Error, Partial = Backend:receive(4096)
+    Data = Data or Partial
+
+    if Data and #Data > 0 then
+      local Sent, SendError = Client:send(Data)
+
+      if not Sent then
+        Logger:Error("Client send failed: %s", SendError)
+        break
+      end
+    end
+
+    if Error then
+      break
+    end
+  end
+
+  Backend:close()
   Client:close()
 end
