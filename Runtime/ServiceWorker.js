@@ -3,46 +3,17 @@ const ProxyPort = 8000;
 const ProxyAddress = `http://${ProxyHost}:${ProxyPort}`;
 const ProxyPrefix = `${ProxyAddress}/`;
 
-function IsProxyUrl(Value) {
-  return Value === ProxyAddress || Value.startsWith(ProxyPrefix);
-}
+const ClientBaseUrls = new Map();
 
-function UnproxyUrl(Value) {
-  if (!Value.startsWith(ProxyPrefix)) {
-    return Value;
+self.addEventListener("message", (Event) => {
+  if (Event.data?.Type !== "SetBaseUrl") {
+    return;
   }
 
-  const Original = Value.slice(ProxyPrefix.length);
-  if (/^https?:\/\//i.test(Original)) {
-    return Original;
+  if (Event.source?.id) {
+    ClientBaseUrls.set(Event.source.id, Event.data.BaseUrl);
   }
-
-  return Value;
-}
-
-function RewriteUrl(Value, BaseUrl) {
-  Value = Value.trim();
-  if (!Value || Value.startsWith("#")) {
-    return Value;
-  }
-
-  if (IsProxyUrl(Value)) {
-    return Value;
-  }
-
-  try {
-    const Url = new URL(Value, BaseUrl);
-    if (Url.protocol !== "http:" && Url.protocol !== "https:") {
-      return Value;
-    }
-
-    return `${ProxyPrefix}${Url.href}`;
-  } catch {
-    return Value;
-  }
-}
-
-const BaseUrl = UnproxyUrl(window.location.href);
+});
 
 self.addEventListener("install", (Event) => {
   Event.waitUntil(self.skipWaiting());
@@ -53,6 +24,31 @@ self.addEventListener("activate", (Event) => {
 });
 
 self.addEventListener("fetch", (Event) => {
-  const ProxyUrl = RewriteUrl(Event.request.ur, BaseUrl);
-  Event.respondWith(fetch(ProxyUrl));
+  const RequestUrl = new URL(Event.request.url);
+  if (RequestUrl.origin !== ProxyAddress) {
+    return;
+  }
+
+  if (RequestUrl.pathname.includes("?_yip=true")) {
+    return;
+  }
+
+  if (/^\/https?:\/\//i.test(RequestUrl.pathname)) {
+    return;
+  }
+
+  const BaseUrl = ClientBaseUrls.get(Event.clientId);
+  if (!BaseUrl) {
+    console.warn("Yip: No BaseUrl registered for client:", Event.clientId);
+    return;
+  }
+
+  const TargetUrl = new URL(RequestUrl.pathname + RequestUrl.search, BaseUrl);
+  const ProxyUrl = `${ProxyPrefix}${TargetUrl.href}`;
+
+  console.log("Yip intercepted:", Event.request.url);
+  console.log("Yip destination:", ProxyUrl);
+
+  const ProxyRequest = new Request(ProxyUrl, Event.request);
+  Event.respondWith(fetch(ProxyRequest));
 });

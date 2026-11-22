@@ -13,6 +13,42 @@ local ProxyHost = "localhost"
 local ProxyPort = 8000
 local ProxyAddress = "http://" .. ProxyHost .. ":" .. ProxyPort
 
+function Logger:PrintTable(Table, Indent, Seen)
+  Indent = Indent or 0
+  Seen = Seen or {}
+
+  if type(Table) ~= "table" then
+    print(string.rep("  ", Indent) .. tostring(Table))
+    return
+  end
+
+  if Seen[Table] then
+    print(string.rep("  ", Indent) .. "<circular reference>")
+    return
+  end
+
+  Seen[Table] = true
+
+  local Prefix = string.rep("  ", Indent)
+
+  print(Prefix .. "{")
+
+  for Key, Value in pairs(Table) do
+    io.write(Prefix .. "  [" .. string.format("%q", Key) .. "] = ")
+
+    if type(Value) == "table" then
+      print()
+      Logger:PrintTable(Value, Indent + 1, Seen)
+    else
+      print(string.format("%q", Value) .. ",")
+    end
+  end
+
+  print(Prefix .. "}")
+
+  Seen[Table] = nil
+end
+
 function Logger:Log(...)
   io.stdout:flush()
   io.stderr:write("\27[1;37mYip:\27[0m ")
@@ -519,10 +555,11 @@ end
 
 local function ForwardResponse(Backend, Client, Method)
   local Headers, Error = ReadResponseHeaders(Backend)
-
   if not Headers then
     return nil, Error
   end
+
+  Headers.AccessControlAllowOrigin = "*"
 
   local Status = Headers.Status
   local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
@@ -580,7 +617,6 @@ local function ForwardResponse(Backend, Client, Method)
   RewriteLocation(Headers)
 
   local Response = ReconstructResponse(Headers)
-
   local Success
   Success, Error = SendAll(Client, Response)
 

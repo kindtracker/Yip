@@ -461,9 +461,15 @@ function InitializeDocument(Document, BaseUrl) {
   ObserveDocument(Document);
 }
 
-InitializeDocument(document, UnproxyUrl(window.location.href));
-RegisterServiceWorker();
+async function Initialize() {
+  InitializeDocument(document, UnproxyUrl(window.location.href));
 
-navigator.serviceWorker.addEventListener("controllerchange", () => {
-  console.log("Yip: Service Worker now controls this page");
-});
+  await RegisterServiceWorker();
+  const Registration = await navigator.serviceWorker.ready;
+  Registration.active.postMessage({
+    Type: "SetBaseUrl",
+    BaseUrl: UnproxyUrl(window.location.href),
+  });
+}
+
+Initialize();
