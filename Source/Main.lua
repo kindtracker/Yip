@@ -509,7 +509,7 @@ local function InjectRuntime(Body)
     return Body
   end
 
-  local Result, Count = Body:gsub("</head%s*>", RuntimeCode .. "%0", 1)
+  local Result, Count = Body:gsub("(<head[^>]*>)", "%1" .. RuntimeCode, 1)
   if Count == 0 then
     Result = RuntimeCode .. Body
   end
