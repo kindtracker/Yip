@@ -209,29 +209,41 @@ while true do
   Headers.Path = Headers.ProxyPath
   Headers.Connection = "close"
 
+  if Headers.Path:sub(1, 1) ~= "/" then
+    Headers.Path = "/" .. Headers.Path
+  end
+
   Logger:PrintTable(Headers)
 
-  local HeaderText = ReconstructRequest(Headers)
+  local IncomingPath = Headers.Path
+  local TargetUrl = IncomingPath:match("^/(https?://.+)$")
 
-  local Backend = Logger:FatalAssert(LuaSocket.tcp4())
-  Backend:settimeout(5)
+  local Host, Path
 
-  local Url = Headers.Path
-  local Host, Path = GetHostFromUrl(Url)
-
-  if not Host and Headers.Referer then
+  if TargetUrl then
+    Host, Path = GetHostFromUrl(TargetUrl)
+  else
     local RefererUrl = RewriteReferer(Headers.Referer)
-    Host = RefererUrl and GetHostFromUrl(RefererUrl)
-    Path = Url
+
+    if RefererUrl then
+      Host = GetHostFromUrl(RefererUrl)
+      Path = IncomingPath
+    end
   end
 
   if not Host then
-    Logger:Error("Could not determine destination host from %s", Headers.Path)
+    Logger:Error("Could not determine destination host from %s", IncomingPath)
     Client:close()
     goto continue
   end
 
-  print(Host, Path)
+  Headers.OriginalPath = IncomingPath
+  Headers.Path = Path
+  Headers.Host = Host
+  Headers.Connection = "close"
+
+  local Backend = Logger:FatalAssert(LuaSocket.tcp4())
+  Backend:settimeout(5)
 
   local Success, Error = Backend:connect(Host, 80)
   if not Success then
@@ -239,6 +251,8 @@ while true do
     Client:close()
     return
   end
+
+  local HeaderText = ReconstructRequest(Headers)
 
   local Sent, SendError = Backend:send(HeaderText)
   if not Sent then
