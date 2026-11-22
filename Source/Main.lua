@@ -257,6 +257,10 @@ local function ForwardChunked(Source, Destination)
   end
 end
 
+local function SendBadRequest(Client)
+  Client:send("HTTP/1.1 400 Bad Request\r\n\r\n")
+end
+
 local Success, Error = Server:setoption("reuseaddr", true)
 Logger:FatalAssert(Success, Error)
 
@@ -325,6 +329,8 @@ while true do
 
   if not Host then
     Logger:Error("Could not determine destination host from %s", IncomingPath)
+
+    SendBadRequest(Client)
     Client:close()
     goto continue
   end
@@ -368,6 +374,7 @@ while true do
     if not Success then
       Logger:Error("%s connection failed: %s", Host, Error)
       Backend:close()
+      SendBadRequest(Client)
       Client:close()
       return
     end
@@ -384,6 +391,7 @@ while true do
   if not Sent then
     Logger:Error("Failed to send request: %s", SendError)
     Backend:close()
+    SendBadRequest(Client)
     Client:close()
     return
   end
