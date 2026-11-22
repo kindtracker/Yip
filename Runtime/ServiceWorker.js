@@ -1,54 +1,44 @@
-const ProxyHost = "localhost";
-const ProxyPort = 8000;
-const ProxyAddress = `http://${ProxyHost}:${ProxyPort}`;
-const ProxyPrefix = `${ProxyAddress}/`;
-
-const ClientBaseUrls = new Map();
+const Proxy = "http://localhost:8000/";
+const Origin = new URL(Proxy).origin;
+const Bases = new Map();
 
 self.addEventListener("message", (Event) => {
-  if (Event.data?.Type !== "SetBaseUrl") {
-    return;
-  }
-
-  if (Event.source?.id) {
-    ClientBaseUrls.set(Event.source.id, Event.data.BaseUrl);
-  }
+  if (Event.data?.Type === "SetBaseUrl" && Event.source?.id)
+    Bases.set(Event.source.id, Event.data.BaseUrl);
 });
 
-self.addEventListener("install", (Event) => {
-  Event.waitUntil(self.skipWaiting());
-});
-
-self.addEventListener("activate", (Event) => {
-  Event.waitUntil(self.clients.claim());
-});
+self.addEventListener("install", (Event) =>
+  Event.waitUntil(self.skipWaiting()),
+);
+self.addEventListener("activate", (Event) =>
+  Event.waitUntil(self.clients.claim()),
+);
 
 self.addEventListener("fetch", (Event) => {
-  const RequestUrl = new URL(Event.request.url);
-  if (RequestUrl.origin !== ProxyAddress) {
+  const Url = new URL(Event.request.url);
+
+  if (
+    Url.origin !== Origin ||
+    Url.pathname.startsWith("/_yip_") ||
+    /^\/https?:\/\//i.test(Url.pathname)
+  )
     return;
-  }
 
-  if (RequestUrl.pathname.includes("?_yip=true")) {
-    return;
-  }
+  Event.respondWith(
+    (async () => {
+      let Base = Bases.get(Event.clientId);
 
-  if (/^\/https?:\/\//i.test(RequestUrl.pathname)) {
-    return;
-  }
+      if (!Base && Event.clientId) {
+        const Client = await self.clients.get(Event.clientId);
+        const Path = new URL(Client?.url || "http://invalid").pathname.slice(1);
 
-  const BaseUrl = ClientBaseUrls.get(Event.clientId);
-  if (!BaseUrl) {
-    console.warn("Yip: No BaseUrl registered for client:", Event.clientId);
-    return;
-  }
+        if (/^https?:\/\//i.test(Path)) Base = Path;
+      }
 
-  const TargetUrl = new URL(RequestUrl.pathname + RequestUrl.search, BaseUrl);
-  const ProxyUrl = `${ProxyPrefix}${TargetUrl.href}`;
+      if (!Base) return fetch(Event.request);
 
-  console.log("Yip intercepted:", Event.request.url);
-  console.log("Yip destination:", ProxyUrl);
-
-  const ProxyRequest = new Request(ProxyUrl, Event.request);
-  Event.respondWith(fetch(ProxyRequest));
+      const Target = new URL(Url.pathname + Url.search, Base);
+      return fetch(new Request(Proxy + Target.href, Event.request));
+    })(),
+  );
 });

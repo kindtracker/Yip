@@ -1,9 +1,5 @@
-const ProxyHost = "localhost";
-const ProxyPort = 8000;
-const ProxyAddress = `http://${ProxyHost}:${ProxyPort}`;
-const ProxyPrefix = `${ProxyAddress}/`;
-
-const UrlAttributes = [
+const Proxy = "http://localhost:8000/";
+const Attributes = [
   "href",
   "src",
   "srcset",
@@ -25,451 +21,211 @@ const UrlAttributes = [
   "usemap",
 ];
 
-const DocumentObservers = new WeakMap();
-const DocumentBases = new WeakMap();
-const ObservedFrames = new WeakSet();
+const Bases = new WeakMap();
+const Observers = new WeakMap();
+const Frames = new WeakSet();
 
-function IsProxyUrl(Value) {
-  return Value === ProxyAddress || Value.startsWith(ProxyPrefix);
+function Unproxy(Url) {
+  return Url.startsWith(Proxy) && /^https?:\/\//i.test(Url.slice(Proxy.length))
+    ? Url.slice(Proxy.length)
+    : Url;
 }
 
-function UnproxyUrl(Value) {
-  if (!Value.startsWith(ProxyPrefix)) {
-    return Value;
-  }
-
-  const Original = Value.slice(ProxyPrefix.length);
-  if (/^https?:\/\//i.test(Original)) {
-    return Original;
-  }
-
-  return Value;
+function Base(Document) {
+  return Bases.get(Document) || Unproxy(Document.location.href);
 }
 
-function GetPageUrl(Document) {
-  return (
-    DocumentBases.get(Document) ||
-    UnproxyUrl(Document.location?.href || window.location.href)
-  );
-}
+function Rewrite(Url, BaseUrl) {
+  Url = Url.trim();
 
-function GetDocumentBase(Document) {
-  const PageUrl = GetPageUrl(Document);
-  const BaseElement = Document.querySelector("base[href]");
-  if (!BaseElement) {
-    return PageUrl;
-  }
-
-  const BaseUrl = UnproxyUrl(BaseElement.getAttribute("href"));
-  try {
-    return new URL(BaseUrl, PageUrl).href;
-  } catch {
-    return PageUrl;
-  }
-}
-
-function RewriteUrl(Value, BaseUrl) {
-  Value = Value.trim();
-  if (!Value || Value.startsWith("#")) {
-    return Value;
-  }
-
-  if (IsProxyUrl(Value)) {
-    return Value;
-  }
+  if (!Url || Url.startsWith("#") || Url.startsWith(Proxy)) return Url;
 
   try {
-    const Url = new URL(Value, BaseUrl);
-    if (Url.protocol !== "http:" && Url.protocol !== "https:") {
-      return Value;
-    }
-
-    return `${ProxyPrefix}${Url.href}`;
+    const Result = new URL(Url, BaseUrl);
+    return /^https?:$/.test(Result.protocol) ? Proxy + Result.href : Url;
   } catch {
-    return Value;
+    return Url;
   }
 }
 
-function RewriteAttribute(Element, Attribute, Value) {
-  if (Element.getAttribute(Attribute) === Value) {
-    return;
-  }
-
-  Element.setAttribute(Attribute, Value);
-}
-
-function RewriteSrcset(Value, BaseUrl) {
-  const Candidates = [];
-  let Position = 0;
-
-  while (Position < Value.length) {
-    while (
-      Position < Value.length &&
-      (Value[Position] === "," || /\s/.test(Value[Position]))
-    ) {
-      Position++;
-    }
-    if (Position >= Value.length) {
-      break;
-    }
-
-    const Start = Position;
-    while (Position < Value.length && !/\s/.test(Value[Position])) {
-      Position++;
-    }
-
-    let Url = Value.slice(Start, Position);
-    const HasTrailingComma = Url.endsWith(",");
-    while (Url.endsWith(",")) {
-      Url = Url.slice(0, -1);
-    }
-
-    let Descriptor = "";
-    if (!HasTrailingComma) {
-      while (Position < Value.length && /\s/.test(Value[Position])) {
-        Position++;
-      }
-
-      const DescriptorStart = Position;
-      while (Position < Value.length && Value[Position] !== ",") {
-        Position++;
-      }
-
-      Descriptor = Value.slice(DescriptorStart, Position).trim();
-    }
-
-    if (Url) {
-      const Rewritten = RewriteUrl(Url, BaseUrl);
-      Candidates.push(Descriptor ? `${Rewritten} ${Descriptor}` : Rewritten);
-    }
-
-    if (Value[Position] === ",") {
-      Position++;
-    }
-  }
-
-  return Candidates.join(", ");
-}
-
-function RewriteUrlList(Value, BaseUrl) {
-  return Value.trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((Url) => RewriteUrl(Url, BaseUrl))
+function RewriteList(Value, BaseUrl) {
+  return Value.split(/\s+/)
+    .map((Url) => Rewrite(Url, BaseUrl))
     .join(" ");
 }
 
-function RewriteRefresh(Value, BaseUrl) {
+function RewriteSrcset(Value, BaseUrl) {
   return Value.replace(
-    /^(\s*\d+\s*;\s*url\s*=\s*)(.*)$/i,
-    (Match, Prefix, Url) => {
-      const Quote = Url.match(/^(['"])(.*)\1$/);
-      if (Quote) {
-        return Prefix + Quote[1] + RewriteUrl(Quote[2], BaseUrl) + Quote[1];
-      }
-
-      return Prefix + RewriteUrl(Url, BaseUrl);
-    },
+    /(\S+)(\s+\d+[wx])?/g,
+    (_, Url, Size = "") => Rewrite(Url.replace(/,$/, ""), BaseUrl) + Size,
   );
 }
 
-function RewriteSrcdoc(Element) {
-  try {
-    const FrameDocument = Element.contentDocument;
-    if (!FrameDocument) {
-      return;
-    }
-    InitializeDocument(FrameDocument, GetDocumentBase(Element.ownerDocument));
-  } catch {}
-}
+function RewriteValue(Attribute, Value, BaseUrl) {
+  if (["srcset", "imagesrcset"].includes(Attribute))
+    return RewriteSrcset(Value, BaseUrl);
 
-function ObserveFrame(Element) {
-  if (ObservedFrames.has(Element)) {
-    return;
-  }
+  if (["ping", "attributionsrc"].includes(Attribute))
+    return RewriteList(Value, BaseUrl);
 
-  ObservedFrames.add(Element);
-  Element.addEventListener("load", () => {
-    try {
-      const FrameDocument = Element.contentDocument;
-      if (!FrameDocument) {
-        return;
-      }
-      const BaseUrl = Element.hasAttribute("srcdoc")
-        ? GetDocumentBase(Element.ownerDocument)
-        : UnproxyUrl(FrameDocument.location.href);
-
-      InitializeDocument(FrameDocument, BaseUrl);
-    } catch {}
-  });
-
-  if (Element.contentDocument?.readyState === "complete") {
-    RewriteSrcdoc(Element);
-  }
+  return Rewrite(Value, BaseUrl);
 }
 
 function RewriteElement(Element) {
-  if (!(Element instanceof Element.ownerDocument.defaultView.Element)) {
-    return;
-  }
+  if (!(Element instanceof Element.ownerDocument.defaultView.Element)) return;
 
   const Document = Element.ownerDocument;
-  const BaseUrl =
-    Element.localName === "base"
-      ? GetPageUrl(Document)
-      : GetDocumentBase(Document);
-  for (const Attribute of UrlAttributes) {
-    if (!Element.hasAttribute(Attribute)) {
-      continue;
-    }
+  const BaseUrl = Base(Document);
+
+  for (const Attribute of Attributes) {
+    if (!Element.hasAttribute(Attribute)) continue;
 
     const Value = Element.getAttribute(Attribute);
+    const Result = RewriteValue(Attribute, Value, BaseUrl);
 
-    let Rewritten;
-    switch (Attribute) {
-      case "srcset":
-      case "imagesrcset":
-        Rewritten = RewriteSrcset(Value, BaseUrl);
-        break;
-      case "ping":
-      case "attributionsrc":
-        Rewritten = RewriteUrlList(Value, BaseUrl);
-        break;
-      default:
-        Rewritten = RewriteUrl(Value, BaseUrl);
-        break;
-    }
-
-    RewriteAttribute(Element, Attribute, Rewritten);
+    if (Value !== Result) Element.setAttribute(Attribute, Result);
   }
 
   if (
     Element.localName === "meta" &&
     Element.httpEquiv?.toLowerCase() === "refresh"
   ) {
-    RewriteAttribute(
-      Element,
-      "content",
-      RewriteRefresh(Element.content, BaseUrl),
+    Element.content = Element.content.replace(
+      /(url\s*=\s*)(['"]?)([^'"]+)\2/i,
+      (_, Prefix, Quote, Url) => Prefix + Quote + Rewrite(Url, BaseUrl) + Quote,
     );
   }
 
-  if (Element instanceof Document.defaultView.HTMLIFrameElement) {
+  if (Element instanceof Document.defaultView.HTMLIFrameElement)
     ObserveFrame(Element);
-  }
 }
 
-function RewriteSubtree(Node) {
-  if (!(Node instanceof Node.ownerDocument.defaultView.Element)) {
-    return;
-  }
+function RewriteTree(Node) {
+  if (!(Node instanceof Node.ownerDocument.defaultView.Element)) return;
 
   RewriteElement(Node);
   Node.querySelectorAll("*").forEach(RewriteElement);
 }
 
-function RewriteDocument(Document) {
-  if (!Document.documentElement) {
-    return;
-  }
+function ObserveFrame(Frame) {
+  if (Frames.has(Frame)) return;
+  Frames.add(Frame);
 
-  RewriteSubtree(Document.documentElement);
+  Frame.addEventListener("load", () => {
+    try {
+      const Document = Frame.contentDocument;
+      if (Document)
+        InitializeDocument(Document, Unproxy(Document.location.href));
+    } catch {}
+  });
 }
 
-function InstallUrlOverrides(Document) {
+function InstallOverrides(Document) {
   const Window = Document.defaultView;
   if (!Window) return;
 
-  const Patched = new WeakSet();
+  const Groups = {
+    HTMLAnchorElement: ["href"],
+    HTMLAreaElement: ["href"],
+    HTMLLinkElement: ["href"],
+    HTMLScriptElement: ["src"],
+    HTMLImageElement: ["src", "srcset"],
+    HTMLSourceElement: ["src", "srcset"],
+    HTMLMediaElement: ["src"],
+    HTMLVideoElement: ["poster"],
+    HTMLIFrameElement: ["src"],
+    HTMLFormElement: ["action"],
+    HTMLInputElement: ["src", "formAction"],
+    HTMLButtonElement: ["formAction"],
+    HTMLObjectElement: ["data"],
+    HTMLQuoteElement: ["cite"],
+    HTMLBaseElement: ["href"],
+    HTMLTrackElement: ["src"],
+  };
 
-  function PatchSetter(Prototype, Property, Attribute = Property) {
-    if (!Prototype) return;
-
-    const Descriptor = Object.getOwnPropertyDescriptor(Prototype, Property);
-
-    if (!Descriptor?.set || !Descriptor.configurable) return;
-
-    Object.defineProperty(Prototype, Property, {
-      ...Descriptor,
-
-      set(Value) {
-        if (typeof Value === "string") {
-          const BaseUrl = GetDocumentBase(this.ownerDocument);
-
-          switch (Attribute) {
-            case "srcset":
-            case "imagesrcset":
-              Value = RewriteSrcset(Value, BaseUrl);
-              break;
-
-            case "ping":
-            case "attributionsrc":
-              Value = RewriteUrlList(Value, BaseUrl);
-              break;
-
-            default:
-              Value = RewriteUrl(Value, BaseUrl);
-              break;
-          }
-        }
-
-        return Descriptor.set.call(this, Value);
-      },
-    });
-  }
-
-  function PatchSetAttribute(Prototype) {
-    if (!Prototype || Patched.has(Prototype)) return;
-    Patched.add(Prototype);
-
-    const Original = Prototype.setAttribute;
-
-    Prototype.setAttribute = function (Name, Value) {
-      const Attribute = String(Name).toLowerCase();
-
-      if (UrlAttributes.includes(Attribute)) {
-        const BaseUrl = GetDocumentBase(this.ownerDocument);
-
-        switch (Attribute) {
-          case "srcset":
-          case "imagesrcset":
-            Value = RewriteSrcset(String(Value), BaseUrl);
-            break;
-
-          case "ping":
-          case "attributionsrc":
-            Value = RewriteUrlList(String(Value), BaseUrl);
-            break;
-
-          default:
-            Value = RewriteUrl(String(Value), BaseUrl);
-            break;
-        }
-      }
-
-      if (
-        Attribute === "content" &&
-        this.localName === "meta" &&
-        this.httpEquiv?.toLowerCase() === "refresh"
-      ) {
-        Value = RewriteRefresh(
-          String(Value),
-          GetDocumentBase(this.ownerDocument),
-        );
-      }
-
-      return Original.call(this, Name, Value);
-    };
-  }
-
-  const PropertyGroups = [
-    [Window.HTMLAnchorElement, ["href"]],
-    [Window.HTMLAreaElement, ["href"]],
-    [Window.HTMLLinkElement, ["href"]],
-    [Window.HTMLScriptElement, ["src"]],
-    [Window.HTMLImageElement, ["src", "srcset"]],
-    [Window.HTMLSourceElement, ["src", "srcset"]],
-    [Window.HTMLMediaElement, ["src"]],
-    [Window.HTMLVideoElement, ["poster"]],
-    [Window.HTMLIFrameElement, ["src"]],
-    [Window.HTMLFormElement, ["action"]],
-    [Window.HTMLInputElement, ["src", "formAction"]],
-    [Window.HTMLButtonElement, ["formAction"]],
-    [Window.HTMLObjectElement, ["data"]],
-    [Window.HTMLQuoteElement, ["cite"]],
-    [Window.HTMLBaseElement, ["href"]],
-    [Window.HTMLTrackElement, ["src"]],
-  ];
-
-  for (const [Constructor, Properties] of PropertyGroups) {
-    if (!Constructor) continue;
+  for (const [Name, Properties] of Object.entries(Groups)) {
+    const Prototype = Window[Name]?.prototype;
+    if (!Prototype) continue;
 
     for (const Property of Properties) {
-      const Attribute = Property.toLowerCase();
+      const Descriptor = Object.getOwnPropertyDescriptor(Prototype, Property);
+      if (!Descriptor?.set || !Descriptor.configurable) continue;
 
-      PatchSetter(Constructor.prototype, Property, Attribute);
+      Object.defineProperty(Prototype, Property, {
+        ...Descriptor,
+        set(Value) {
+          return Descriptor.set.call(
+            this,
+            typeof Value === "string"
+              ? RewriteValue(
+                  Property.toLowerCase(),
+                  Value,
+                  Base(this.ownerDocument),
+                )
+              : Value,
+          );
+        },
+      });
     }
-
-    PatchSetAttribute(Constructor.prototype);
   }
 
-  PatchSetAttribute(Window.Element.prototype);
-}
+  const Original = Window.Element.prototype.setAttribute;
 
-async function RegisterServiceWorker() {
-  if (!("serviceWorker" in navigator)) {
-    console.warn("Yip: Service Workers are unsupported");
-    return;
-  }
+  Window.Element.prototype.setAttribute = function (Name, Value) {
+    Name = String(Name).toLowerCase();
 
-  try {
-    const Registration = await navigator.serviceWorker.register(
-      "/_yip_service_worker.js?_yip=true",
-      {
-        scope: "/",
-      },
-    );
+    if (Attributes.includes(Name))
+      Value = RewriteValue(Name, String(Value), Base(this.ownerDocument));
 
-    console.log("Yip Service Worker registered:", Registration.scope);
-  } catch (Error) {
-    console.error("Yip: Failed to register Service Worker:", Error);
-  }
-}
-
-function ObserveDocument(Document) {
-  if (DocumentObservers.has(Document)) {
-    return DocumentObservers.get(Document);
-  }
-
-  const Observer = new Document.defaultView.MutationObserver(
-    (MutationsList) => {
-      for (const Mutation of MutationsList) {
-        if (Mutation.type === "attributes") {
-          RewriteElement(Mutation.target);
-          continue;
-        }
-
-        for (const Node of Mutation.addedNodes) {
-          RewriteSubtree(Node);
-        }
-      }
-    },
-  );
-
-  Observer.observe(Document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: [...UrlAttributes, "content"],
-  });
-
-  DocumentObservers.set(Document, Observer);
-  return Observer;
+    return Original.call(this, Name, Value);
+  };
 }
 
 function InitializeDocument(Document, BaseUrl) {
-  if (!Document || !Document.documentElement) {
-    return;
-  }
+  if (!Document?.documentElement) return;
 
-  if (!DocumentBases.has(Document)) {
-    DocumentBases.set(Document, BaseUrl);
-  }
+  Bases.set(Document, BaseUrl);
+  InstallOverrides(Document);
+  RewriteTree(Document.documentElement);
 
-  InstallUrlOverrides(Document);
-  RewriteDocument(Document);
-  ObserveDocument(Document);
+  if (Observers.has(Document)) return;
+
+  const Observer = new Document.defaultView.MutationObserver((Mutations) => {
+    for (const Mutation of Mutations) {
+      if (Mutation.type === "attributes") RewriteElement(Mutation.target);
+      else Mutation.addedNodes.forEach(RewriteTree);
+    }
+  });
+
+  Observer.observe(Document.documentElement, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: [...Attributes, "content"],
+  });
+
+  Observers.set(Document, Observer);
 }
 
 async function Initialize() {
-  InitializeDocument(document, UnproxyUrl(window.location.href));
+  const BaseUrl = Unproxy(location.href);
+  InitializeDocument(document, BaseUrl);
 
-  await RegisterServiceWorker();
-  const Registration = await navigator.serviceWorker.ready;
-  Registration.active.postMessage({
-    Type: "SetBaseUrl",
-    BaseUrl: UnproxyUrl(window.location.href),
-  });
+  if (!("serviceWorker" in navigator)) return;
+
+  try {
+    await navigator.serviceWorker.register("/_yip_service_worker.js?_yip=true");
+    const Registration = await navigator.serviceWorker.ready;
+
+    const SendBase = () =>
+      navigator.serviceWorker.controller?.postMessage({
+        Type: "SetBaseUrl",
+        BaseUrl,
+      });
+
+    SendBase();
+    navigator.serviceWorker.addEventListener("controllerchange", SendBase);
+  } catch {}
 }
 
 Initialize();
