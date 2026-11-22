@@ -39,7 +39,6 @@ function UnproxyUrl(Value) {
   }
 
   const Original = Value.slice(ProxyPrefix.length);
-
   if (/^https?:\/\//i.test(Original)) {
     return Original;
   }
@@ -57,13 +56,11 @@ function GetPageUrl(Document) {
 function GetDocumentBase(Document) {
   const PageUrl = GetPageUrl(Document);
   const BaseElement = Document.querySelector("base[href]");
-
   if (!BaseElement) {
     return PageUrl;
   }
 
   const BaseUrl = UnproxyUrl(BaseElement.getAttribute("href"));
-
   try {
     return new URL(BaseUrl, PageUrl).href;
   } catch {
@@ -73,7 +70,6 @@ function GetDocumentBase(Document) {
 
 function RewriteUrl(Value, BaseUrl) {
   Value = Value.trim();
-
   if (!Value || Value.startsWith("#")) {
     return Value;
   }
@@ -84,7 +80,6 @@ function RewriteUrl(Value, BaseUrl) {
 
   try {
     const Url = new URL(Value, BaseUrl);
-
     if (Url.protocol !== "http:" && Url.protocol !== "https:") {
       return Value;
     }
@@ -114,33 +109,28 @@ function RewriteSrcset(Value, BaseUrl) {
     ) {
       Position++;
     }
-
     if (Position >= Value.length) {
       break;
     }
 
     const Start = Position;
-
     while (Position < Value.length && !/\s/.test(Value[Position])) {
       Position++;
     }
 
     let Url = Value.slice(Start, Position);
     const HasTrailingComma = Url.endsWith(",");
-
     while (Url.endsWith(",")) {
       Url = Url.slice(0, -1);
     }
 
     let Descriptor = "";
-
     if (!HasTrailingComma) {
       while (Position < Value.length && /\s/.test(Value[Position])) {
         Position++;
       }
 
       const DescriptorStart = Position;
-
       while (Position < Value.length && Value[Position] !== ",") {
         Position++;
       }
@@ -150,7 +140,6 @@ function RewriteSrcset(Value, BaseUrl) {
 
     if (Url) {
       const Rewritten = RewriteUrl(Url, BaseUrl);
-
       Candidates.push(Descriptor ? `${Rewritten} ${Descriptor}` : Rewritten);
     }
 
@@ -175,7 +164,6 @@ function RewriteRefresh(Value, BaseUrl) {
     /^(\s*\d+\s*;\s*url\s*=\s*)(.*)$/i,
     (Match, Prefix, Url) => {
       const Quote = Url.match(/^(['"])(.*)\1$/);
-
       if (Quote) {
         return Prefix + Quote[1] + RewriteUrl(Quote[2], BaseUrl) + Quote[1];
       }
@@ -191,7 +179,6 @@ function RewriteSrcdoc(Element) {
     if (!FrameDocument) {
       return;
     }
-
     InitializeDocument(FrameDocument, GetDocumentBase(Element.ownerDocument));
   } catch {}
 }
@@ -202,15 +189,12 @@ function ObserveFrame(Element) {
   }
 
   ObservedFrames.add(Element);
-
   Element.addEventListener("load", () => {
     try {
       const FrameDocument = Element.contentDocument;
-
       if (!FrameDocument) {
         return;
       }
-
       const BaseUrl = Element.hasAttribute("srcdoc")
         ? GetDocumentBase(Element.ownerDocument)
         : UnproxyUrl(FrameDocument.location.href);
@@ -234,7 +218,6 @@ function RewriteElement(Element) {
     Element.localName === "base"
       ? GetPageUrl(Document)
       : GetDocumentBase(Document);
-
   for (const Attribute of UrlAttributes) {
     if (!Element.hasAttribute(Attribute)) {
       continue;
@@ -243,18 +226,15 @@ function RewriteElement(Element) {
     const Value = Element.getAttribute(Attribute);
 
     let Rewritten;
-
     switch (Attribute) {
       case "srcset":
       case "imagesrcset":
         Rewritten = RewriteSrcset(Value, BaseUrl);
         break;
-
       case "ping":
       case "attributionsrc":
         Rewritten = RewriteUrlList(Value, BaseUrl);
         break;
-
       default:
         Rewritten = RewriteUrl(Value, BaseUrl);
         break;
@@ -285,7 +265,6 @@ function RewriteSubtree(Node) {
   }
 
   RewriteElement(Node);
-
   Node.querySelectorAll("*").forEach(RewriteElement);
 }
 
@@ -295,6 +274,128 @@ function RewriteDocument(Document) {
   }
 
   RewriteSubtree(Document.documentElement);
+}
+
+function InstallUrlOverrides(Document) {
+  const Window = Document.defaultView;
+  if (!Window) return;
+
+  const Patched = new WeakSet();
+
+  function PatchSetter(Prototype, Property, Attribute = Property) {
+    if (!Prototype) return;
+
+    const Descriptor = Object.getOwnPropertyDescriptor(Prototype, Property);
+
+    if (!Descriptor?.set || !Descriptor.configurable) return;
+
+    Object.defineProperty(Prototype, Property, {
+      ...Descriptor,
+
+      set(Value) {
+        if (typeof Value === "string") {
+          const BaseUrl = GetDocumentBase(this.ownerDocument);
+
+          switch (Attribute) {
+            case "srcset":
+            case "imagesrcset":
+              Value = RewriteSrcset(Value, BaseUrl);
+              break;
+
+            case "ping":
+            case "attributionsrc":
+              Value = RewriteUrlList(Value, BaseUrl);
+              break;
+
+            default:
+              Value = RewriteUrl(Value, BaseUrl);
+              break;
+          }
+        }
+
+        return Descriptor.set.call(this, Value);
+      },
+    });
+  }
+
+  function PatchSetAttribute(Prototype) {
+    if (!Prototype || Patched.has(Prototype)) return;
+    Patched.add(Prototype);
+
+    const Original = Prototype.setAttribute;
+
+    Prototype.setAttribute = function (Name, Value) {
+      const Attribute = String(Name).toLowerCase();
+
+      if (UrlAttributes.includes(Attribute)) {
+        const BaseUrl = GetDocumentBase(this.ownerDocument);
+
+        switch (Attribute) {
+          case "srcset":
+          case "imagesrcset":
+            Value = RewriteSrcset(String(Value), BaseUrl);
+            break;
+
+          case "ping":
+          case "attributionsrc":
+            Value = RewriteUrlList(String(Value), BaseUrl);
+            break;
+
+          default:
+            Value = RewriteUrl(String(Value), BaseUrl);
+            break;
+        }
+      }
+
+      if (
+        Attribute === "content" &&
+        this.localName === "meta" &&
+        this.httpEquiv?.toLowerCase() === "refresh"
+      ) {
+        Value = RewriteRefresh(
+          String(Value),
+          GetDocumentBase(this.ownerDocument),
+        );
+      }
+
+      return Original.call(this, Name, Value);
+    };
+  }
+
+  // Patch common URL-bearing DOM properties.
+  const PropertyGroups = [
+    [Window.HTMLAnchorElement, ["href"]],
+    [Window.HTMLAreaElement, ["href"]],
+    [Window.HTMLLinkElement, ["href"]],
+    [Window.HTMLScriptElement, ["src"]],
+    [Window.HTMLImageElement, ["src", "srcset"]],
+    [Window.HTMLSourceElement, ["src", "srcset"]],
+    [Window.HTMLMediaElement, ["src"]],
+    [Window.HTMLVideoElement, ["poster"]],
+    [Window.HTMLIFrameElement, ["src"]],
+    [Window.HTMLFormElement, ["action"]],
+    [Window.HTMLInputElement, ["src", "formAction"]],
+    [Window.HTMLButtonElement, ["formAction"]],
+    [Window.HTMLObjectElement, ["data"]],
+    [Window.HTMLQuoteElement, ["cite"]],
+    [Window.HTMLBaseElement, ["href"]],
+    [Window.HTMLTrackElement, ["src"]],
+  ];
+
+  for (const [Constructor, Properties] of PropertyGroups) {
+    if (!Constructor) continue;
+
+    for (const Property of Properties) {
+      const Attribute = Property.toLowerCase();
+
+      PatchSetter(Constructor.prototype, Property, Attribute);
+    }
+
+    PatchSetAttribute(Constructor.prototype);
+  }
+
+  // Catch setAttribute() on other elements too.
+  PatchSetAttribute(Window.Element.prototype);
 }
 
 function ObserveDocument(Document) {
@@ -325,7 +426,6 @@ function ObserveDocument(Document) {
   });
 
   DocumentObservers.set(Document, Observer);
-
   return Observer;
 }
 
@@ -338,6 +438,7 @@ function InitializeDocument(Document, BaseUrl) {
     DocumentBases.set(Document, BaseUrl);
   }
 
+  InstallUrlOverrides(Document);
   RewriteDocument(Document);
   ObserveDocument(Document);
 }
