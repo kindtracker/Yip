@@ -362,7 +362,6 @@ function InstallUrlOverrides(Document) {
     };
   }
 
-  // Patch common URL-bearing DOM properties.
   const PropertyGroups = [
     [Window.HTMLAnchorElement, ["href"]],
     [Window.HTMLAreaElement, ["href"]],
@@ -394,8 +393,27 @@ function InstallUrlOverrides(Document) {
     PatchSetAttribute(Constructor.prototype);
   }
 
-  // Catch setAttribute() on other elements too.
   PatchSetAttribute(Window.Element.prototype);
+}
+
+async function RegisterServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    console.warn("Yip: Service Workers are unsupported");
+    return;
+  }
+
+  try {
+    const Registration = await navigator.serviceWorker.register(
+      "/_yip_service_worker.js?_yip=true",
+      {
+        scope: "/",
+      },
+    );
+
+    console.log("Yip Service Worker registered:", Registration.scope);
+  } catch (Error) {
+    console.error("Yip: Failed to register Service Worker:", Error);
+  }
 }
 
 function ObserveDocument(Document) {
@@ -444,3 +462,8 @@ function InitializeDocument(Document, BaseUrl) {
 }
 
 InitializeDocument(document, UnproxyUrl(window.location.href));
+RegisterServiceWorker();
+
+navigator.serviceWorker.addEventListener("controllerchange", () => {
+  console.log("Yip: Service Worker now controls this page");
+});

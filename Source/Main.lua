@@ -591,13 +591,13 @@ local function ForwardResponse(Backend, Client, Method)
   return SendAll(Client, Body)
 end
 
-local function SendRuntime(Client)
-  local FilePtr, Error = io.open("Runtime/Runtime.js", "rb")
+local function SendFile(Client, File)
+  local FilePtr, Error = io.open(File, "rb")
   if not FilePtr then
     return SendErrorResponse(Client, "500 Internal Server Error", Error)
   end
 
-  local Runtime = FilePtr:read("*a")
+  local FileContent = FilePtr:read("*a")
   FilePtr:close()
 
   local Response = string.format(
@@ -606,8 +606,8 @@ local function SendRuntime(Client)
       .. "Content-Length: %d\r\n"
       .. "Connection: close\r\n"
       .. "\r\n%s",
-    #Runtime,
-    Runtime
+    #FileContent,
+    FileContent
   )
 
   return SendAll(Client, Response)
@@ -625,6 +625,24 @@ local function HandleClient(Client)
   end
 
   Headers.OriginalPath = Headers.Path
+
+  if Headers.OriginalPath == "/_yip_runtime.js?_yip=true" then
+    local _, Error = SendFile(Client, "Runtime/Runtime.js")
+    if Error then
+      Logger:Error("Failed to send runtime: %s", Error)
+    end
+
+    Client:close()
+    return
+  elseif Headers.OriginalPath == "/_yip_service_worker.js?_yip=true" then
+    local _, Error = SendFile(Client, "Runtime/ServiceWorker.js")
+    if Error then
+      Logger:Error("Failed to send service worker: %s", Error)
+    end
+
+    Client:close()
+    return
+  end
 
   local Destination
   Destination, Error = ResolveDestination(Headers)
@@ -650,16 +668,6 @@ local function HandleClient(Client)
 
   if DisplayPath:match("^/https?://") then
     DisplayPath = DisplayPath:sub(2)
-  end
-
-  if Headers.OriginalPath == "/_yip_runtime.js?_yip=true" then
-    local _, Error = SendRuntime(Client)
-    if Error then
-      Logger:Error("Failed to send runtime: %s", Error)
-    end
-
-    Client:close()
-    return
   end
 
   Logger:Log(
