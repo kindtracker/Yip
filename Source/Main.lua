@@ -1,5 +1,7 @@
 local LuaSocket = require("socket")
 local LuaSSL = require("ssl")
+local Zlib = require("compress.zlib")
+local Brotli = require("compress.brotli")
 
 local Server = assert(LuaSocket.tcp4())
 
@@ -214,6 +216,38 @@ local function ReconstructRequest(Headers)
   return table.concat(Request)
 end
 
+local function Decompress(Body, Encoding)
+  Encoding = (Encoding or ""):lower()
+
+  if Encoding == "gzip" then
+    return Zlib.decompress(Body, { format = "gzip" })
+  elseif Encoding == "deflate" then
+    return Zlib.decompress(Body, { format = "zlib" })
+  elseif Encoding == "br" then
+    return Brotli.decompress(Body)
+  elseif Encoding == "" or Encoding == "identity" then
+    return Body
+  end
+
+  return nil, "Unsupported content encoding: " .. Encoding
+end
+
+local function Compress(Body, Encoding)
+  Encoding = (Encoding or ""):lower()
+
+  if Encoding == "gzip" then
+    return Zlib.compress(Body, { format = "gzip" })
+  elseif Encoding == "deflate" then
+    return Zlib.compress(Body, { format = "zlib" })
+  elseif Encoding == "br" then
+    return Brotli.compress(Body)
+  elseif Encoding == "" or Encoding == "identity" then
+    return Body
+  end
+
+  return nil, "Unsupported content encoding: " .. Encoding
+end
+
 local function CreateBackend(Destination)
   local Backend, Error = LuaSocket.tcp4()
 
@@ -353,8 +387,6 @@ local function ReadChunked(Source)
       return nil, Error
     end
 
-    Buffer[#Buffer + 1] = Line .. "\r\n"
-
     local HexSize = Line:match("^%s*([%da-fA-F]+)")
     local Size = HexSize and tonumber(HexSize, 16)
 
@@ -369,8 +401,6 @@ local function ReadChunked(Source)
         if not Trailer then
           return nil, TrailerError
         end
-
-        Buffer[#Buffer + 1] = Trailer .. "\r\n"
 
         if Trailer == "" then
           return table.concat(Buffer)
@@ -395,11 +425,7 @@ local function ReadChunked(Source)
     if CRLF ~= "\r\n" then
       return nil, "Invalid chunk delimiter"
     end
-
-    Buffer[#Buffer + 1] = CRLF
   end
-
-  return table.concat(Buffer)
 end
 
 local function ReadResponseHeaders(Backend)
@@ -498,11 +524,61 @@ local function ForwardResponse(Backend, Client, Method)
     return nil, Error
   end
 
-  if Headers.ContentLength then
-    Headers.ContentLength = tostring(tonumber(Headers.ContentLength) + #RuntimeCode)
+  local Status = Headers.Status
+  local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
+
+  if not HasBody then
+    RewriteLocation(Headers)
+
+    local Response = ReconstructResponse(Headers)
+    return SendAll(Client, Response)
   end
 
+  local TransferEncoding = (Headers.TransferEncoding or ""):lower()
+  local ContentLength = tonumber(Headers.ContentLength)
+
+  local Body
+
+  if TransferEncoding:match("chunked") then
+    Body, Error = ReadChunked(Backend)
+  elseif ContentLength then
+    Body, Error = ReadExact(Backend, ContentLength)
+  else
+    Body, Error = ReadUntilClose(Backend)
+
+    Headers.Connection = "close"
+  end
+
+  if not Body then
+    return nil, Error
+  end
+
+  local ContentType = (Headers.ContentType or ""):lower()
+  local IsHTML = ContentType:find("text/html", 1, true) ~= nil
+
+  if IsHTML and Status ~= 206 then
+    local Encoding = Headers.ContentEncoding or "identity"
+
+    local Ok, Decompressed = pcall(Decompress, Body, Encoding)
+
+    if Ok and Decompressed then
+      local Modified = InjectRuntime(Decompressed)
+
+      local CompressOk, Compressed = pcall(Compress, Modified, Encoding)
+
+      if CompressOk and Compressed then
+        Body = Compressed
+        Headers.ETag = nil
+        Headers.ContentMd5 = nil
+      end
+    end
+  end
+
+  Headers.TransferEncoding = nil
+  Headers.ContentLength = tostring(#Body)
+
   RewriteLocation(Headers)
+
   local Response = ReconstructResponse(Headers)
 
   local Success
@@ -512,29 +588,7 @@ local function ForwardResponse(Backend, Client, Method)
     return nil, Error
   end
 
-  local Status = Headers.Status
-  local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
-  if not HasBody then
-    return true
-  end
-
-  local TransferEncoding = (Headers.TransferEncoding or ""):lower()
-  local ContentLength = tonumber(Headers.ContentLength)
-  local Buffer, Error
-
-  if TransferEncoding:match("chunked") then
-    Buffer, Error = ReadChunked(Backend)
-  elseif ContentLength then
-    Buffer, Error = ReadExact(Backend, ContentLength)
-  else
-    Buffer, Error = ReadUntilClose(Backend)
-  end
-
-  if not Buffer then
-    return nil, Error
-  end
-
-  return Buffer, Error
+  return SendAll(Client, Body)
 end
 
 local function HandleClient(Client)
