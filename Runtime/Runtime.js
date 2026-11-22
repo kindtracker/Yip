@@ -5,6 +5,7 @@ const ProxyAddress = `http://${ProxyHost}:${ProxyPort}`;
 const UrlAttributes = [
   "href",
   "src",
+  "srcset",
   "action",
   "formaction",
   "poster",
@@ -17,6 +18,7 @@ const UrlAttributes = [
   "xlink:href",
   "itemid",
   "attributionsrc",
+  "ping",
 ];
 
 function RewriteUrl(Url) {
@@ -53,9 +55,11 @@ function RewritePing(Value) {
 }
 
 function RewriteSrcdoc(Element) {
-  const Document = new DOMParser().parseFromString(Element.srcdoc, "text/html");
+  const Document = Element.contentDocument;
+  if (!Document) return;
+
   RewriteDocument(Document);
-  Element.srcdoc = Document.documentElement.outerHTML;
+  ObserveDocument(Document);
 }
 
 function RewriteDocument(Document) {
@@ -64,22 +68,45 @@ function RewriteDocument(Document) {
   Document.querySelectorAll("*").forEach(RewriteElement);
 }
 
+function ObserveDocument(Document) {
+  const Observer = new MutationObserver((MutationsList) => {
+    for (const Mutation of MutationsList) {
+      if (Mutation.type === "attributes") {
+        RewriteElement(Mutation.target);
+      }
+
+      for (const Node of Mutation.addedNodes) {
+        RewriteElement(Node);
+      }
+    }
+  });
+
+  Observer.observe(Document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: UrlAttributes,
+  });
+
+  return Observer;
+}
+
 function RewriteElement(Element) {
-  if (!(Element instanceof Element)) {
+  if (!(Element instanceof window.Element)) {
     return;
   }
 
   RewriteUrlProperty(Element, "href");
-  for (const UrlAttribute in UrlAttributes) {
+  for (const UrlAttribute of UrlAttributes) {
     if (!Element.hasAttribute(UrlAttribute)) continue;
     const Attribute = Element.getAttribute(UrlAttribute);
 
     if (UrlAttribute === "srcset") {
-      Element.srcset = RewriteSrcset(Attribute);
+      Element.setAttribute("srcset", RewriteSrcset(Attribute));
     } else if (UrlAttribute === "ping") {
-      Element.ping = RewritePing(Attribute);
+      Element.setAttribute("ping", RewritePing(Attribute));
     } else {
-      Element[UrlAttribute] = RewriteUrl(Attribute);
+      Element.setAttribute(UrlAttribute, RewriteUrl(Attribute));
     }
   }
 
