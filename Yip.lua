@@ -273,37 +273,44 @@ end
 
 local function GetBackend(Destination)
   local Key = string.format("%s://%s:%d", Destination.Scheme, Destination.Host, Destination.Port)
-  local Backend = (not BackendBusy[Key]) and HostConnections[Key]
+  local Pool = HostConnections[Key] or {}
+  HostConnections[Key] = Pool
 
-  if Backend then
-    Backend:settimeout(0)
-    local Data, Error, Partial = Backend:receive(1)
-    Backend:settimeout(10)
-
-    if not Data and not Partial and Error == "timeout" then
+  for _, Backend in ipairs(Pool) do
+    if not BackendBusy[Backend] then
+      BackendBusy[Backend] = true
       return Backend, Key
     end
-    Backend:close()
-    HostConnections[Key] = nil
   end
 
-  local Error
-  Backend, Error = CreateBackend(Destination)
+  local Backend, Error = CreateBackend(Destination)
   if not Backend then
     return nil, Error
   end
 
-  HostConnections[Key] = Backend
-  BackendBusy[Key] = true
+  Pool[#Pool + 1] = Backend
+  BackendBusy[Backend] = true
   return Backend, Key
 end
 
-local function CloseBackend(Key)
-  local Backend = HostConnections[Key]
-  if Backend then
-    Backend:close()
+local function CloseBackend(Backend, Key)
+  BackendBusy[Backend] = nil
+  Backend:close()
+
+  local Pool = HostConnections[Key]
+  if not Pool then
+    return
+  end
+
+  for I = #Pool, 1, -1 do
+    if Pool[I] == Backend then
+      table.remove(Pool, I)
+      break
+    end
+  end
+
+  if #Pool == 0 then
     HostConnections[Key] = nil
-    BackendBusy[Key] = nil
   end
 end
 
@@ -311,7 +318,7 @@ local function ReadExact(Source, Count)
   local Buffer = {}
 
   while Count > 0 do
-    local Data, Error, Partial = Source:receive(math.min(4096, Count))
+    local Data, Error, Partial = Source:receive(math.min(16384, Count))
     Data = Data or Partial
 
     if Data and #Data > 0 then
@@ -331,7 +338,7 @@ local function ReadUntilClose(Source)
   local Buffer = {}
 
   while true do
-    local Data, Error, Partial = Source:receive(4096)
+    local Data, Error, Partial = Source:receive(16384)
     Data = Data or Partial
     if Data and #Data > 0 then
       Buffer[#Buffer + 1] = Data
@@ -385,6 +392,106 @@ local function ReadChunked(Source)
     end
     if CRLF ~= "\r\n" then
       return nil, "Invalid chunk delimiter"
+    end
+  end
+end
+
+local function ForwardExact(Source, Count, Destination)
+  while Count > 0 do
+    local Data, Error, Partial = Source:receive(math.min(16384, Count))
+    Data = Data or Partial
+
+    if Data and #Data > 0 then
+      local Success
+      Success, Error = SendAll(Destination, Data)
+      if not Success then
+        return nil, Error
+      end
+
+      Count = Count - #Data
+    end
+
+    if Error and Count > 0 then
+      return nil, Error
+    end
+  end
+
+  return true
+end
+
+local function ForwardUntilClose(Source, Destination)
+  while true do
+    local Data, Error, Partial = Source:receive(16384)
+    Data = Data or Partial
+
+    if Error or Data == nil then
+      if Error == "closed" then
+        return true
+      end
+      return nil, Error
+    end
+
+    local Success
+    Success, Error = SendAll(Destination, Data)
+    if not Success then
+      return nil, Error
+    end
+  end
+
+  return true
+end
+
+local function ForwardChunked(Source, Destination)
+  while true do
+    local Line, Error = Source:receive("*l")
+    if not Line then
+      return nil, Error
+    end
+
+    local Size = tonumber(Line:match("^%s*([%da-fA-F]+)"), 16)
+    if not Size then
+      return nil, "Invalid chunk size"
+    end
+
+    local Success
+    Success, Error = SendAll(Destination, Line .. "\r\n")
+    if not Success then
+      return nil, Error
+    end
+
+    if Size == 0 then
+      repeat
+        Line, Error = Source:receive("*l")
+        if not Line then
+          return nil, Error
+        end
+
+        Success, Error = SendAll(Destination, Line .. "\r\n")
+        if not Success then
+          return nil, Error
+        end
+      until Line == ""
+
+      return true
+    end
+
+    Success, Error = ForwardExact(Source, Size, Destination)
+    if not Success then
+      return nil, Error
+    end
+
+    local CRLF
+    CRLF, Error = Source:receive(2)
+    if not CRLF then
+      return nil, Error
+    end
+    if CRLF ~= "\r\n" then
+      return nil, "Invalid chunk delimiter"
+    end
+
+    Success, Error = SendAll(Destination, CRLF)
+    if not Success then
+      return nil, Error
     end
   end
 end
@@ -468,31 +575,32 @@ local function ForwardResponse(Backend, Client, Method)
   local Connection = (Headers.Connection or ""):lower()
   local KeepAlive = not Connection:find("close", 1, true)
     and (Headers.HttpVersion ~= "HTTP/1.0" or Connection:find("keep-alive", 1, true))
-
   if not HasBody then
     RewriteLocation(Headers)
-    return SendAll(Client, ReconstructResponse(Headers)), nil, KeepAlive
+    local Success
+    Success, Error = SendAll(Client, ReconstructResponse(Headers))
+    return Success, Error, KeepAlive
   end
 
   local TransferEncoding = (Headers.TransferEncoding or ""):lower()
   local Length = tonumber(Headers.ContentLength)
-  local Body
+  local IsHTML = (Headers.ContentType or ""):lower():find("text/html", 1, true) and Status ~= 206
+  if IsHTML then
+    local Body
 
-  if TransferEncoding:find("chunked", 1, true) then
-    Body, Error = ReadChunked(Backend)
-  elseif Length then
-    Body, Error = ReadExact(Backend, Length)
-  else
-    Body, Error = ReadUntilClose(Backend)
-    KeepAlive = false
-  end
+    if TransferEncoding:find("chunked", 1, true) then
+      Body, Error = ReadChunked(Backend)
+    elseif Length then
+      Body, Error = ReadExact(Backend, Length)
+    else
+      Body, Error = ReadUntilClose(Backend)
+      KeepAlive = false
+    end
 
-  if not Body then
-    return nil, Error
-  end
+    if not Body then
+      return nil, Error
+    end
 
-  local IsHTML = (Headers.ContentType or ""):lower():find("text/html", 1, true)
-  if IsHTML and Status ~= 206 then
     local Encoding = Headers.ContentEncoding or "identity"
     local Ok, Decoded = pcall(Decompress, Body, Encoding)
 
@@ -505,10 +613,22 @@ local function ForwardResponse(Backend, Client, Method)
         Headers.ETag, Headers.ContentMd5 = nil, nil
       end
     end
+
+    Headers.TransferEncoding = nil
+    Headers.ContentLength = tostring(#Body)
+
+    RewriteLocation(Headers)
+
+    local Success
+    Success, Error = SendAll(Client, ReconstructResponse(Headers))
+    if not Success then
+      return nil, Error
+    end
+
+    Success, Error = SendAll(Client, Body)
+    return Success, Error, KeepAlive
   end
 
-  Headers.TransferEncoding = nil
-  Headers.ContentLength = tostring(#Body)
   RewriteLocation(Headers)
 
   local Success
@@ -517,7 +637,16 @@ local function ForwardResponse(Backend, Client, Method)
     return nil, Error
   end
 
-  return SendAll(Client, Body), nil, KeepAlive
+  if TransferEncoding:find("chunked", 1, true) then
+    Success, Error = ForwardChunked(Backend, Client)
+  elseif Length then
+    Success, Error = ForwardExact(Backend, Length, Client)
+  else
+    Success, Error = ForwardUntilClose(Backend, Client)
+    KeepAlive = false
+  end
+
+  return Success, Error, KeepAlive
 end
 
 local function SendFile(Client, File)
@@ -612,7 +741,7 @@ local function HandleClient(Client)
 
   if not Success then
     Logger:Error("Failed to send request: %s", Error)
-    CloseBackend(Key)
+    CloseBackend(Destination, Key)
     SendErrorResponse(Client, "502 Bad Gateway")
     Client:close()
     return
@@ -622,9 +751,9 @@ local function HandleClient(Client)
 
   if not Result then
     Logger:Error("Failed to forward response: %s", ResponseError)
-    CloseBackend(Key)
+    CloseBackend(Destination, Key)
   elseif not KeepAlive then
-    CloseBackend(Key)
+    CloseBackend(Destination, Key)
   end
 
   Client:close()
