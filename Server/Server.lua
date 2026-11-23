@@ -1,7 +1,6 @@
 local LuaSocket = require("socket")
 local Copas = require("copas")
 
-local Configuration = require("Server.Configuration")
 local Server
 
 local function HandleClient(Client)
@@ -20,7 +19,7 @@ local function HandleClient(Client)
     return
   end
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Read request took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
   StartTime = LuaSocket.gettime()
@@ -74,7 +73,7 @@ local function HandleClient(Client)
     Headers.HttpVersion
   )
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Rewrite request took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
   StartTime = LuaSocket.gettime()
@@ -87,7 +86,7 @@ local function HandleClient(Client)
     return
   end
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Get backend took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
   StartTime = LuaSocket.gettime()
@@ -103,7 +102,7 @@ local function HandleClient(Client)
     return
   end
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Send request took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
   StartTime = LuaSocket.gettime()
@@ -117,11 +116,11 @@ local function HandleClient(Client)
     CloseBackend(Backend, Key)
   end
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Forward response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Handle client took %.3f ms", (LuaSocket.gettime() - ClientStartTime) * 1000)
   end
 
@@ -137,13 +136,13 @@ local function StartServer()
   local Success, Error = Server:setoption("reuseaddr", true)
   Logger:FatalAssert(Success, Error)
 
-  Success, Error = Server:bind("127.0.0.1", Configuration.ProxyPort)
+  Success, Error = Server:bind("127.0.0.1", ProxyPort)
   Logger:FatalAssert(Success, Error)
 
   Success, Error = Server:listen()
   Logger:FatalAssert(Success, Error)
 
-  Logger:Log("Server is listening on %s/", Configuration.ProxyAddress)
+  Logger:Log("Server is listening on %s/", ProxyAddress)
 end
 
 local function RunServer()
@@ -161,3 +160,5 @@ local ServerTable = {
 for Key, Value in pairs(ServerTable) do
   _G[Key] = Value
 end
+
+return ServerTable

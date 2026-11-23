@@ -1,7 +1,6 @@
 local LuaSocket = require("socket")
 local Copas = require("copas")
 
-local Configuration = require("Server.Configuration")
 local HostConnections, BackendBusy = {}, {}
 
 local function ReadExact(Source, Count)
@@ -234,7 +233,7 @@ local function ForwardResponse(Backend, Client, Method)
   local Status = Headers.Status
   local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Read and parse response header took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
   StartTime = LuaSocket.gettime()
@@ -248,7 +247,7 @@ local function ForwardResponse(Backend, Client, Method)
     local Success
     Success, Error = SendAll(Client, ReconstructResponse(Headers))
 
-    if Configuration.Benchmark then
+    if Benchmark then
       Logger:Log("Send header took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
     end
     return Success, Error, KeepAlive
@@ -276,7 +275,7 @@ local function ForwardResponse(Backend, Client, Method)
       return nil, Error
     end
 
-    if Configuration.Benchmark then
+    if Benchmark then
       Logger:Log("Read response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
     end
     StartTime = LuaSocket.gettime()
@@ -284,7 +283,7 @@ local function ForwardResponse(Backend, Client, Method)
     local Encoding = Headers.ContentEncoding or "identity"
     local Ok, Decoded, DecompressError = pcall(Decompress, Body, Encoding)
 
-    if Configuration.Benchmark then
+    if Benchmark then
       Logger:Log("Decompress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
     end
 
@@ -298,7 +297,7 @@ local function ForwardResponse(Backend, Client, Method)
         Headers.ETag, Headers.ContentMd5 = nil, nil
       end
 
-      if Configuration.Benchmark then
+      if Benchmark then
         Logger:Log("Compress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
       end
       if not Ok then
@@ -323,7 +322,7 @@ local function ForwardResponse(Backend, Client, Method)
 
     Success, Error = SendAll(Client, Body)
 
-    if Configuration.Benchmark then
+    if Benchmark then
       Logger:Log("Send forward response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
     end
 
@@ -349,7 +348,7 @@ local function ForwardResponse(Backend, Client, Method)
     KeepAlive = false
   end
 
-  if Configuration.Benchmark then
+  if Benchmark then
     Logger:Log("Send forward response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
 
@@ -470,3 +469,5 @@ local Forward = {
 for Key, Value in pairs(Forward) do
   _G[Key] = Value
 end
+
+return Forward

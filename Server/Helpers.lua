@@ -281,3 +281,5 @@ local Helpers = {
 for Key, Value in pairs(Helpers) do
   _G[Key] = Value
 end
+
+return Helpers

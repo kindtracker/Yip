@@ -9,4 +9,8 @@ local Configuration = {
 
 Configuration.ProxyAddress = "http://" .. Configuration.ProxyHost .. ":" .. Configuration.ProxyPort
 
+for Key, Value in pairs(Configuration) do
+  _G[Key] = Value
+end
+
 return Configuration
