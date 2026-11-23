@@ -215,19 +215,18 @@ function InitializeDocument(Document, BaseUrl) {
   Observers.set(Document, Observer);
 }
 
-function OverrideXhr() {
-  console.log("tes");
+function OverrideXhr(BaseUrl) {
   class YipXhr extends OriginalXhr {
-    open(method, url, ...args) {
-      console.log("Xhr:", method, url);
+    open(Method, _Url, ...Arguments) {
+      const Url = new URL(_Url, BaseUrl);
+      const Target = new URL(Url.pathname + Url.search, BaseUrl);
+      const ProxyUrl = Proxy + Target.href;
 
-      return super.open(method, url, ...args);
+      return super.open(Method, ProxyUrl, ...Arguments);
     }
 
-    send(...args) {
-      console.log("Sending Xhr");
-
-      return super.send(...args);
+    send(...Arguments) {
+      return super.send(...Arguments);
     }
   }
 
@@ -257,8 +256,8 @@ async function Initialize() {
   } catch {}
 
   const BaseUrl = Unproxy(location.href);
+  OverrideXhr(BaseUrl);
   InitializeDocument(document, BaseUrl);
-  OverrideXhr();
 }
 
 Initialize();
