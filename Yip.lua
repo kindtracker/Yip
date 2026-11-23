@@ -11,7 +11,7 @@ local ProxyHost, ProxyPort = "localhost", 8000
 local DefaultZlibCompressionLevel = 5
 local DefaultBrotliCompressionLevel = 6
 
-local RuntimeCode = '<script src="/_yip_runtime.js?_yip=true"></script>'
+local RuntimeCode = '<script src="/_YipRuntime.js"></script>'
 local ProxyAddress = "http://" .. ProxyHost .. ":" .. ProxyPort
 local Benchmark = false
 
@@ -562,7 +562,7 @@ local function ReconstructResponse(Headers)
 end
 
 local function InjectRuntime(Body)
-  if Body:find("_yip_runtime.js", 1, true) then
+  if Body:find("_YipRuntime.js", 1, true) then
     return Body
   end
   local Result, Count = Body:gsub("(<head[^>]*>)", "%1" .. RuntimeCode, 1)
@@ -749,8 +749,8 @@ local function HandleClient(Client)
   Headers.OriginalPath = Headers.Path
 
   local LocalFiles = {
-    ["/_yip_runtime.js?_yip=true"] = "Runtime/Runtime.js",
-    ["/_yip_service_worker.js?_yip=true"] = "Runtime/ServiceWorker.js",
+    ["/_YipRuntime.js"] = "Runtime/Runtime.js",
+    ["/_YipServiceWorker.js"] = "Runtime/ServiceWorker.js",
   }
 
   if LocalFiles[Headers.OriginalPath] then

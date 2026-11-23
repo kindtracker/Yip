@@ -74,6 +74,14 @@ function RewriteValue(Attribute, Value, BaseUrl) {
 function RewriteElement(Element) {
   if (!(Element instanceof Element.ownerDocument.defaultView.Element)) return;
 
+  if (
+    Element.tagName === "SCRIPT" &&
+    Element.getAttribute("src")?.includes("_YipRuntime.js")
+  ) {
+    Element.remove();
+    return;
+  }
+
   const Document = Element.ownerDocument;
   const BaseUrl = Base(Document);
 
@@ -208,13 +216,15 @@ function InitializeDocument(Document, BaseUrl) {
 }
 
 async function Initialize() {
-  const BaseUrl = Unproxy(location.href);
-  InitializeDocument(document, BaseUrl);
-
   if (!("serviceWorker" in navigator)) return;
+  if (window._YipInitialized) {
+    return;
+  }
+
+  window._YipInitialized = true;
 
   try {
-    await navigator.serviceWorker.register("/_yip_service_worker.js?_yip=true");
+    await navigator.serviceWorker.register("_YipServiceWorker.js");
     const Registration = await navigator.serviceWorker.ready;
 
     const SendBase = () =>
@@ -226,6 +236,9 @@ async function Initialize() {
     SendBase();
     navigator.serviceWorker.addEventListener("controllerchange", SendBase);
   } catch {}
+
+  const BaseUrl = Unproxy(location.href);
+  InitializeDocument(document, BaseUrl);
 }
 
 Initialize();
