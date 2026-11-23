@@ -16,6 +16,8 @@ local CompressionFormats = {
   deflate = { format = "zlib" },
 }
 
+local Benchmark = false
+
 function Logger:PrintTable(Table, Indent, Seen)
   Indent, Seen = Indent or 0, Seen or {}
   local Prefix = string.rep("  ", Indent)
@@ -562,6 +564,10 @@ local function InjectRuntime(Body)
 end
 
 local function ForwardResponse(Backend, Client, Method)
+  local StartTime = 0
+
+  StartTime = LuaSocket.gettime()
+
   local Headers, Error = ReadResponseHeaders(Backend)
   if not Headers then
     return nil, Error
@@ -572,20 +578,33 @@ local function ForwardResponse(Backend, Client, Method)
   local Status = Headers.Status
   local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
 
+  if Benchmark then
+    Logger:Log("Read and parse response header took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+  end
+  StartTime = LuaSocket.gettime()
+
   local Connection = (Headers.Connection or ""):lower()
   local KeepAlive = not Connection:find("close", 1, true)
     and (Headers.HttpVersion ~= "HTTP/1.0" or Connection:find("keep-alive", 1, true))
   if not HasBody then
+    StartTime = LuaSocket.gettime()
     RewriteLocation(Headers)
     local Success
     Success, Error = SendAll(Client, ReconstructResponse(Headers))
+
+    if Benchmark then
+      Logger:Log("Send header took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+    end
     return Success, Error, KeepAlive
   end
 
   local TransferEncoding = (Headers.TransferEncoding or ""):lower()
   local Length = tonumber(Headers.ContentLength)
   local IsHTML = (Headers.ContentType or ""):lower():find("text/html", 1, true) and Status ~= 206
+
   if IsHTML then
+    StartTime = LuaSocket.gettime()
+
     local Body
 
     if TransferEncoding:find("chunked", 1, true) then
@@ -601,9 +620,19 @@ local function ForwardResponse(Backend, Client, Method)
       return nil, Error
     end
 
+    if Benchmark then
+      Logger:Log("Read response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+    end
+    StartTime = LuaSocket.gettime()
+
     local Encoding = Headers.ContentEncoding or "identity"
     local Ok, Decoded = pcall(Decompress, Body, Encoding)
 
+    if Benchmark then
+      Logger:Log("Decompress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+    end
+
+    StartTime = LuaSocket.gettime()
     if Ok and Decoded then
       local Modified = InjectRuntime(Decoded)
       local CompressOk, Compressed = pcall(Compress, Modified, Encoding)
@@ -612,7 +641,15 @@ local function ForwardResponse(Backend, Client, Method)
         Body = Compressed
         Headers.ETag, Headers.ContentMd5 = nil, nil
       end
+
+      if Benchmark then
+        Logger:Log("Compress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+      end
+    else
+      return nil, Ok
     end
+
+    StartTime = LuaSocket.gettime()
 
     Headers.TransferEncoding = nil
     Headers.ContentLength = tostring(#Body)
@@ -626,8 +663,15 @@ local function ForwardResponse(Backend, Client, Method)
     end
 
     Success, Error = SendAll(Client, Body)
+
+    if Benchmark then
+      Logger:Log("Send forward response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+    end
+
     return Success, Error, KeepAlive
   end
+
+  StartTime = LuaSocket.gettime()
 
   RewriteLocation(Headers)
 
@@ -644,6 +688,10 @@ local function ForwardResponse(Backend, Client, Method)
   else
     Success, Error = ForwardUntilClose(Backend, Client)
     KeepAlive = false
+  end
+
+  if Benchmark then
+    Logger:Log("Send forward response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
 
   return Success, Error, KeepAlive
@@ -669,8 +717,13 @@ local function SendFile(Client, File)
 end
 
 local function HandleClient(Client)
+  local ClientStartTime = LuaSocket.gettime()
+  local StartTime = 0
+
   Client = Copas.wrap(Client)
   Client:settimeout(10)
+
+  StartTime = LuaSocket.gettime()
 
   local Headers, Error = ReadRequest(Client)
   if not Headers then
@@ -678,6 +731,11 @@ local function HandleClient(Client)
     Client:close()
     return
   end
+
+  if Benchmark then
+    Logger:Log("Read request took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+  end
+  StartTime = LuaSocket.gettime()
 
   Headers.OriginalPath = Headers.Path
 
@@ -728,6 +786,11 @@ local function HandleClient(Client)
     Headers.HttpVersion
   )
 
+  if Benchmark then
+    Logger:Log("Rewrite request took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+  end
+  StartTime = LuaSocket.gettime()
+
   local Backend, Key = GetBackend(Destination)
   if not Backend then
     Logger:Error("%s connection failed: %s", Destination.Host, Key)
@@ -735,6 +798,11 @@ local function HandleClient(Client)
     Client:close()
     return
   end
+
+  if Benchmark then
+    Logger:Log("Get backend took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+  end
+  StartTime = LuaSocket.gettime()
 
   local Success
   Success, Error = SendAll(Backend, ReconstructRequest(Headers))
@@ -747,6 +815,11 @@ local function HandleClient(Client)
     return
   end
 
+  if Benchmark then
+    Logger:Log("Send request took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+  end
+  StartTime = LuaSocket.gettime()
+
   local Result, ResponseError, KeepAlive = ForwardResponse(Backend, Client, Headers.Method)
 
   if not Result then
@@ -754,6 +827,14 @@ local function HandleClient(Client)
     CloseBackend(Destination, Key)
   elseif not KeepAlive then
     CloseBackend(Destination, Key)
+  end
+
+  if Benchmark then
+    Logger:Log("Forward response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+  end
+
+  if Benchmark then
+    Logger:Log("Handle client took %.3f ms", (LuaSocket.gettime() - ClientStartTime) * 1000)
   end
 
   Client:close()
