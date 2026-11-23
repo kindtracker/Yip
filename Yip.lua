@@ -4,65 +4,55 @@ local Zlib = require("compress.zlib")
 local Brotli = require("compress.brotli")
 
 local Server = assert(LuaSocket.tcp4())
-
-local HostConnections = {}
-local Logger = {}
+local HostConnections, Logger = {}, {}
 
 local RuntimeCode = '<script src="/_yip_runtime.js?_yip=true"></script>'
-local ProxyHost = "localhost"
-local ProxyPort = 8000
+local ProxyHost, ProxyPort = "localhost", 8000
 local ProxyAddress = "http://" .. ProxyHost .. ":" .. ProxyPort
 
+local CompressionFormats = {
+  gzip = { format = "gzip" },
+  deflate = { format = "zlib" },
+}
+
 function Logger:PrintTable(Table, Indent, Seen)
-  Indent = Indent or 0
-  Seen = Seen or {}
+  Indent, Seen = Indent or 0, Seen or {}
+  local Prefix = string.rep("  ", Indent)
 
   if type(Table) ~= "table" then
-    print(string.rep("  ", Indent) .. tostring(Table))
+    print(Prefix .. tostring(Table))
     return
   end
 
   if Seen[Table] then
-    print(string.rep("  ", Indent) .. "<circular reference>")
+    print(Prefix .. "<circular reference>")
     return
   end
-
   Seen[Table] = true
-
-  local Prefix = string.rep("  ", Indent)
-
   print(Prefix .. "{")
 
   for Key, Value in pairs(Table) do
-    io.write(Prefix .. "  [" .. string.format("%q", Key) .. "] = ")
-
+    io.write(Prefix .. "  [" .. string.format("%q", tostring(Key)) .. "] = ")
     if type(Value) == "table" then
       print()
-      Logger:PrintTable(Value, Indent + 1, Seen)
+      self:PrintTable(Value, Indent + 1, Seen)
     else
-      print(string.format("%q", Value) .. ",")
+      print(string.format("%q", tostring(Value)) .. ",")
     end
   end
 
   print(Prefix .. "}")
-
   Seen[Table] = nil
 end
 
 function Logger:Log(...)
   io.stdout:flush()
-  io.stderr:write("\27[1;37mYip:\27[0m ")
-  io.stderr:write("\27[1;34mInfo:\27[0m ")
-  io.stderr:write(string.format(...))
-  io.stderr:write("\n")
+  io.stderr:write("\27[1;37mYip:\27[0m \27[1;34mInfo:\27[0m " .. string.format(...) .. "\n")
 end
 
 function Logger:Error(...)
   io.stdout:flush()
-  io.stderr:write("\27[1;37mYip:\27[0m ")
-  io.stderr:write("\27[1;31mError:\27[0m ")
-  io.stderr:write(string.format(...))
-  io.stderr:write("\n")
+  io.stderr:write("\27[1;37mYip:\27[0m \27[1;31mError:\27[0m " .. string.format(...) .. "\n")
 end
 
 function Logger:FatalError(...)
@@ -74,7 +64,6 @@ function Logger:Assert(Result, ...)
   if not Result then
     self:Error(...)
   end
-
   return Result
 end
 
@@ -82,22 +71,21 @@ function Logger:FatalAssert(Result, ...)
   if not Result then
     self:FatalError(...)
   end
-
   return Result
 end
 
 function string:pascalcase()
   return self
-    :gsub("(%a)([%w]*)", function(First, Rest)
-      return First:upper() .. Rest:lower()
+    :gsub("(%a)([%w]*)", function(A, B)
+      return A:upper() .. B:lower()
     end)
     :gsub("[^%w]", "")
 end
 
 function string:kebabcase()
   return self
-    :gsub("%u", function(Character)
-      return "-" .. Character:lower()
+    :gsub("%u", function(C)
+      return "-" .. C:lower()
     end)
     :gsub("^-", "")
 end
@@ -107,10 +95,11 @@ local function SendAll(Socket, Data)
 
   while Index <= #Data do
     local Sent, Error, Partial = Socket:send(Data, Index)
-
-    Index = (Sent or Partial or (Index - 1)) + 1
-
-    if not Sent and Index == 1 then
+    if Sent then
+      Index = Sent + 1
+    elseif Partial and Partial >= Index then
+      Index = Partial + 1
+    else
       return nil, Error
     end
   end
@@ -120,53 +109,39 @@ end
 
 local function SendErrorResponse(Client, Status, Message)
   local Body = Message or Status
-
-  local Response = string.format(
-    "HTTP/1.1 %s\r\n"
-      .. "Content-Type: text/plain\r\n"
-      .. "Content-Length: %d\r\n"
-      .. "Connection: close\r\n"
-      .. "\r\n%s",
-    Status,
-    #Body,
-    Body
+  return SendAll(
+    Client,
+    string.format(
+      "HTTP/1.1 %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+      Status,
+      #Body,
+      Body
+    )
   )
-
-  SendAll(Client, Response)
 end
 
 local function ReadRequest(Client)
   local Headers = {}
-
   local Line, Error = Client:receive("*l")
-
   if not Line then
     return nil, Error
   end
 
-  local Method, Path, Version = Line:match("^(%S+)%s+(%S+)%s+(%S+)$")
-
-  if not Method then
+  Headers.Method, Headers.Path, Headers.HttpVersion = Line:match("^(%S+)%s+(%S+)%s+(%S+)$")
+  if not Headers.Method then
     return nil, "Invalid request line"
   end
 
-  Headers.Method = Method
-  Headers.Path = Path
-  Headers.HttpVersion = Version
-
   while true do
     Line, Error = Client:receive("*l")
-
     if not Line then
       return nil, Error
     end
-
     if Line == "" then
       break
     end
 
     local Name, Value = Line:match("^([^:]+):%s*(.*)$")
-
     if Name then
       Headers[Name:pascalcase()] = Value
     end
@@ -176,43 +151,34 @@ local function ReadRequest(Client)
 end
 
 local function GetHostFromUrl(Url)
-  local Scheme, Host, Path = Url:match("^(https?)://([^/%?#]+)(.*)$")
-
-  if not Host then
+  local Scheme, Authority, Path = Url:match("^(https?)://([^/%?#]+)(.*)$")
+  if not Authority then
     return nil
   end
 
-  if Path == "" then
-    Path = "/"
-  elseif Path:sub(1, 1) == "?" then
-    Path = "/" .. Path
+  local Host, Port
+  if Authority:sub(1, 1) == "[" then
+    Host, Port = Authority:match("^(%b[]):?(%d*)$")
+  else
+    Host, Port = Authority:match("^([^:]+):?(%d*)$")
   end
 
-  return Scheme:lower(), Host, Path
+  Path = Path == "" and "/" or Path:sub(1, 1) == "?" and "/" .. Path or Path
+  return Scheme:lower(), Host or Authority, Path, tonumber(Port)
 end
 
 local function RewriteReferer(Referer)
-  if not Referer then
-    return nil
-  end
-
-  return Referer:match("^https?://[^/]+/(https?://[^#]+)")
+  return Referer and Referer:match("^https?://[^/]+/(https?://[^#]+)")
 end
 
 local function ResolveDestination(Headers)
-  local IncomingPath = Headers.Path
-  local TargetUrl = IncomingPath:match("^/(https?://.+)$")
+  local Url = Headers.Path:match("^/(https?://.+)$") or RewriteReferer(Headers.Referer)
+  local Scheme, Host, Path, Port
 
-  local Scheme, Host, Path
-
-  if TargetUrl then
-    Scheme, Host, Path = GetHostFromUrl(TargetUrl)
-  else
-    local RefererUrl = RewriteReferer(Headers.Referer)
-
-    if RefererUrl then
-      Scheme, Host = GetHostFromUrl(RefererUrl)
-      Path = IncomingPath
+  if Url then
+    Scheme, Host, Path, Port = GetHostFromUrl(Url)
+    if not Headers.Path:match("^/https?://") then
+      Path = Headers.Path
     end
   end
 
@@ -224,87 +190,69 @@ local function ResolveDestination(Headers)
     Scheme = Scheme,
     Host = Host,
     Path = Path,
-    Port = Scheme == "https" and 443 or 80,
+    Port = Port or (Scheme == "https" and 443 or 80),
   }
 end
 
 local function ReconstructRequest(Headers)
-  local Request = {}
-
-  table.insert(Request, Headers.Method .. " " .. Headers.Path .. " " .. Headers.HttpVersion .. "\r\n")
-
-  local InternalHeaders = {
-    Method = true,
-    Path = true,
-    HttpVersion = true,
-    OriginalPath = true,
-    ProxyPath = true,
-  }
+  local Request = { Headers.Method .. " " .. Headers.Path .. " " .. Headers.HttpVersion .. "\r\n" }
+  local Internal = { Method = true, Path = true, HttpVersion = true, OriginalPath = true, ProxyPath = true }
 
   for Name, Value in pairs(Headers) do
-    if not InternalHeaders[Name] then
-      table.insert(Request, Name:kebabcase() .. ": " .. Value .. "\r\n")
+    if not Internal[Name] then
+      Request[#Request + 1] = Name:kebabcase() .. ": " .. Value .. "\r\n"
     end
   end
 
-  table.insert(Request, "\r\n")
-
+  Request[#Request + 1] = "\r\n"
   return table.concat(Request)
 end
 
 local function Decompress(Body, Encoding)
   Encoding = (Encoding or ""):lower()
-
-  if Encoding == "gzip" then
-    return Zlib.decompress(Body, { format = "gzip" })
-  elseif Encoding == "deflate" then
-    return Zlib.decompress(Body, { format = "zlib" })
-  elseif Encoding == "br" then
+  if CompressionFormats[Encoding] then
+    return Zlib.decompress(Body, CompressionFormats[Encoding])
+  end
+  if Encoding == "br" then
     return Brotli.decompress(Body)
-  elseif Encoding == "" or Encoding == "identity" then
+  end
+  if Encoding == "" or Encoding == "identity" then
     return Body
   end
-
   return nil, "Unsupported content encoding: " .. Encoding
 end
 
 local function Compress(Body, Encoding)
   Encoding = (Encoding or ""):lower()
-
-  if Encoding == "gzip" then
-    return Zlib.compress(Body, { format = "gzip" })
-  elseif Encoding == "deflate" then
-    return Zlib.compress(Body, { format = "zlib" })
-  elseif Encoding == "br" then
+  if CompressionFormats[Encoding] then
+    return Zlib.compress(Body, CompressionFormats[Encoding])
+  end
+  if Encoding == "br" then
     return Brotli.compress(Body)
-  elseif Encoding == "" or Encoding == "identity" then
+  end
+  if Encoding == "" or Encoding == "identity" then
     return Body
   end
-
   return nil, "Unsupported content encoding: " .. Encoding
 end
 
 local function CreateBackend(Destination)
   local Backend, Error = LuaSocket.tcp4()
-
   if not Backend then
     return nil, Error
   end
 
   Backend:settimeout(10)
-
   local Success
   Success, Error = Backend:connect(Destination.Host, Destination.Port)
-
   if not Success then
     Backend:close()
     return nil, Error
   end
 
   if Destination.Scheme == "https" then
-    local TLSBackend
-
-    TLSBackend, Error = LuaSSL.wrap(Backend, {
+    local TLS
+    TLS, Error = LuaSSL.wrap(Backend, {
       mode = "client",
       protocol = "any",
       verify = "peer",
@@ -313,59 +261,52 @@ local function CreateBackend(Destination)
       capath = os.getenv("SSL_CERT_DIR") or "/etc/ssl/certs",
     })
 
-    if not TLSBackend then
+    if not TLS then
       Backend:close()
       return nil, Error
     end
+    TLS:settimeout(10)
+    TLS:sni(Destination.Host)
 
-    TLSBackend:settimeout(10)
-    TLSBackend:sni(Destination.Host)
-
-    Success, Error = TLSBackend:dohandshake()
-
+    Success, Error = TLS:dohandshake()
     if not Success then
-      TLSBackend:close()
+      TLS:close()
       return nil, Error
     end
-
-    Backend = TLSBackend
+    Backend = TLS
   end
 
   return Backend
 end
 
-local function GetBackend(Destination, Client)
-  local Key = Destination.Scheme .. "://" .. Destination.Host .. ":" .. Destination.Port
-
+local function GetBackend(Destination)
+  local Key = string.format("%s://%s:%d", Destination.Scheme, Destination.Host, Destination.Port)
   local Backend = HostConnections[Key]
 
   if Backend then
-    local Data, Error = Client:settimeout(0.0001)
+    Backend:settimeout(0)
+    local Data, Error, Partial = Backend:receive(1)
+    Backend:settimeout(10)
 
-    if not Error then
+    if not Data and not Partial and Error == "timeout" then
       return Backend, Key
     end
-
     Backend:close()
     HostConnections[Key] = nil
   end
 
   local Error
-
   Backend, Error = CreateBackend(Destination)
-
   if not Backend then
     return nil, Error
   end
 
   HostConnections[Key] = Backend
-
   return Backend, Key
 end
 
 local function CloseBackend(Key)
   local Backend = HostConnections[Key]
-
   if Backend then
     Backend:close()
     HostConnections[Key] = nil
@@ -384,7 +325,7 @@ local function ReadExact(Source, Count)
       Count = Count - #Data
     end
 
-    if Error then
+    if Error and Count > 0 then
       return nil, Error
     end
   end
@@ -398,7 +339,6 @@ local function ReadUntilClose(Source)
   while true do
     local Data, Error, Partial = Source:receive(4096)
     Data = Data or Partial
-
     if Data and #Data > 0 then
       Buffer[#Buffer + 1] = Data
     end
@@ -407,7 +347,6 @@ local function ReadUntilClose(Source)
       if Error == "closed" then
         return table.concat(Buffer)
       end
-
       return nil, Error
     end
   end
@@ -418,46 +357,38 @@ local function ReadChunked(Source)
 
   while true do
     local Line, Error = Source:receive("*l")
-
     if not Line then
       return nil, Error
     end
 
     local HexSize = Line:match("^%s*([%da-fA-F]+)")
     local Size = HexSize and tonumber(HexSize, 16)
-
     if not Size then
       return nil, "Invalid chunk size"
     end
 
     if Size == 0 then
-      while true do
-        local Trailer, TrailerError = Source:receive("*l")
-
-        if not Trailer then
-          return nil, TrailerError
+      repeat
+        Line, Error = Source:receive("*l")
+        if not Line then
+          return nil, Error
         end
-
-        if Trailer == "" then
-          return table.concat(Buffer)
-        end
-      end
+      until Line == ""
+      return table.concat(Buffer)
     end
 
-    local Data, DataError = ReadExact(Source, Size)
-
+    local Data
+    Data, Error = ReadExact(Source, Size)
     if not Data then
-      return nil, DataError
+      return nil, Error
     end
-
     Buffer[#Buffer + 1] = Data
 
-    local CRLF, CRLFError = Source:receive(2)
-
+    local CRLF
+    CRLF, Error = Source:receive(2)
     if not CRLF then
-      return nil, CRLFError
+      return nil, Error
     end
-
     if CRLF ~= "\r\n" then
       return nil, "Invalid chunk delimiter"
     end
@@ -466,37 +397,29 @@ end
 
 local function ReadResponseHeaders(Backend)
   local Headers = {}
-
   local Line, Error = Backend:receive("*l")
-
   if not Line then
     return nil, Error
   end
 
   local Version, Status, Message = Line:match("^(%S+)%s+(%d%d%d)%s*(.*)$")
-
   if not Status then
     return nil, "Invalid response status line"
   end
 
-  Headers.StatusLine = Line
-  Headers.Status = tonumber(Status)
-  Headers.HttpVersion = Version
-  Headers.StatusMessage = Message
+  Headers.StatusLine, Headers.Status = Line, tonumber(Status)
+  Headers.HttpVersion, Headers.StatusMessage = Version, Message
 
   while true do
     Line, Error = Backend:receive("*l")
-
     if not Line then
       return nil, Error
     end
-
     if Line == "" then
       break
     end
 
     local Name, Value = Line:match("^([^:]+):%s*(.*)$")
-
     if Name then
       Headers[Name:pascalcase()] = Value
     end
@@ -510,47 +433,31 @@ local function RewriteUrl(Url)
 end
 
 local function RewriteLocation(Headers)
-  if not Headers.Location then
-    return
+  if Headers.Location then
+    Headers.Location = RewriteUrl(Headers.Location)
   end
-
-  Headers.Location = RewriteUrl(Headers.Location)
 end
 
 local function ReconstructResponse(Headers)
-  local Response = {
-    Headers.StatusLine .. "\r\n",
-  }
-
-  local InternalHeaders = {
-    StatusLine = true,
-    Status = true,
-    HttpVersion = true,
-    StatusMessage = true,
-  }
+  local Response = { Headers.StatusLine .. "\r\n" }
+  local Internal = { StatusLine = true, Status = true, HttpVersion = true, StatusMessage = true }
 
   for Name, Value in pairs(Headers) do
-    if not InternalHeaders[Name] then
-      table.insert(Response, Name:kebabcase() .. ": " .. Value .. "\r\n")
+    if not Internal[Name] then
+      Response[#Response + 1] = Name:kebabcase() .. ": " .. Value .. "\r\n"
     end
   end
 
-  table.insert(Response, "\r\n")
-
+  Response[#Response + 1] = "\r\n"
   return table.concat(Response)
 end
 
 local function InjectRuntime(Body)
-  if Body:find("Runtime.js", 1, true) then
+  if Body:find("_yip_runtime.js", 1, true) then
     return Body
   end
-
   local Result, Count = Body:gsub("(<head[^>]*>)", "%1" .. RuntimeCode, 1)
-  if Count == 0 then
-    Result = RuntimeCode .. Body
-  end
-
-  return Result
+  return Count == 0 and RuntimeCode .. Body or Result
 end
 
 local function ForwardResponse(Backend, Client, Method)
@@ -564,67 +471,59 @@ local function ForwardResponse(Backend, Client, Method)
   local Status = Headers.Status
   local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
 
+  local Connection = (Headers.Connection or ""):lower()
+  local KeepAlive = not Connection:find("close", 1, true)
+    and (Headers.HttpVersion ~= "HTTP/1.0" or Connection:find("keep-alive", 1, true))
+
   if not HasBody then
     RewriteLocation(Headers)
-
-    local Response = ReconstructResponse(Headers)
-    return SendAll(Client, Response)
+    return SendAll(Client, ReconstructResponse(Headers)), nil, KeepAlive
   end
 
   local TransferEncoding = (Headers.TransferEncoding or ""):lower()
-  local ContentLength = tonumber(Headers.ContentLength)
-
+  local Length = tonumber(Headers.ContentLength)
   local Body
 
-  if TransferEncoding:match("chunked") then
+  if TransferEncoding:find("chunked", 1, true) then
     Body, Error = ReadChunked(Backend)
-  elseif ContentLength then
-    Body, Error = ReadExact(Backend, ContentLength)
+  elseif Length then
+    Body, Error = ReadExact(Backend, Length)
   else
     Body, Error = ReadUntilClose(Backend)
-
-    Headers.Connection = "close"
+    KeepAlive = false
   end
 
   if not Body then
     return nil, Error
   end
 
-  local ContentType = (Headers.ContentType or ""):lower()
-  local IsHTML = ContentType:find("text/html", 1, true) ~= nil
-
+  local IsHTML = (Headers.ContentType or ""):lower():find("text/html", 1, true)
   if IsHTML and Status ~= 206 then
     local Encoding = Headers.ContentEncoding or "identity"
+    local Ok, Decoded = pcall(Decompress, Body, Encoding)
 
-    local Ok, Decompressed = pcall(Decompress, Body, Encoding)
-
-    if Ok and Decompressed then
-      local Modified = InjectRuntime(Decompressed)
-
+    if Ok and Decoded then
+      local Modified = InjectRuntime(Decoded)
       local CompressOk, Compressed = pcall(Compress, Modified, Encoding)
 
       if CompressOk and Compressed then
         Body = Compressed
-        Headers.ETag = nil
-        Headers.ContentMd5 = nil
+        Headers.ETag, Headers.ContentMd5 = nil, nil
       end
     end
   end
 
   Headers.TransferEncoding = nil
   Headers.ContentLength = tostring(#Body)
-
   RewriteLocation(Headers)
 
-  local Response = ReconstructResponse(Headers)
   local Success
-  Success, Error = SendAll(Client, Response)
-
+  Success, Error = SendAll(Client, ReconstructResponse(Headers))
   if not Success then
     return nil, Error
   end
 
-  return SendAll(Client, Body)
+  return SendAll(Client, Body), nil, KeepAlive
 end
 
 local function SendFile(Client, File)
@@ -633,27 +532,23 @@ local function SendFile(Client, File)
     return SendErrorResponse(Client, "500 Internal Server Error", Error)
   end
 
-  local FileContent = FilePtr:read("*a")
+  local Content = FilePtr:read("*a")
   FilePtr:close()
 
-  local Response = string.format(
-    "HTTP/1.1 200 OK\r\n"
-      .. "Content-Type: text/javascript; charset=utf-8\r\n"
-      .. "Content-Length: %d\r\n"
-      .. "Connection: close\r\n"
-      .. "\r\n%s",
-    #FileContent,
-    FileContent
+  return SendAll(
+    Client,
+    string.format(
+      "HTTP/1.1 200 OK\r\nContent-Type: text/javascript; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+      #Content,
+      Content
+    )
   )
-
-  return SendAll(Client, Response)
 end
 
 local function HandleClient(Client)
   Client:settimeout(10)
 
   local Headers, Error = ReadRequest(Client)
-
   if not Headers then
     Logger:Error("Failed to read request: %s", Error)
     Client:close()
@@ -662,20 +557,16 @@ local function HandleClient(Client)
 
   Headers.OriginalPath = Headers.Path
 
-  if Headers.OriginalPath == "/_yip_runtime.js?_yip=true" then
-    local _, Error = SendFile(Client, "Runtime/Runtime.js")
-    if Error then
-      Logger:Error("Failed to send runtime: %s", Error)
-    end
+  local LocalFiles = {
+    ["/_yip_runtime.js?_yip=true"] = "Runtime/Runtime.js",
+    ["/_yip_service_worker.js?_yip=true"] = "Runtime/ServiceWorker.js",
+  }
 
-    Client:close()
-    return
-  elseif Headers.OriginalPath == "/_yip_service_worker.js?_yip=true" then
-    local _, Error = SendFile(Client, "Runtime/ServiceWorker.js")
-    if Error then
-      Logger:Error("Failed to send service worker: %s", Error)
+  if LocalFiles[Headers.OriginalPath] then
+    local Success, FileError = SendFile(Client, LocalFiles[Headers.OriginalPath])
+    if not Success then
+      Logger:Error("Failed to send file: %s", FileError)
     end
-
     Client:close()
     return
   end
@@ -690,9 +581,7 @@ local function HandleClient(Client)
     return
   end
 
-  Headers.Path = Destination.Path
-  Headers.Host = Destination.Host
-  Headers.Connection = "keep-alive"
+  Headers.Path, Headers.Host, Headers.Connection = Destination.Path, Destination.Host, "keep-alive"
 
   if tonumber(Headers.ContentLength or "0") > 0 or Headers.TransferEncoding then
     SendErrorResponse(Client, "501 Not Implemented", "Request bodies are not supported yet.")
@@ -701,7 +590,6 @@ local function HandleClient(Client)
   end
 
   local DisplayPath = Headers.OriginalPath
-
   if DisplayPath:match("^/https?://") then
     DisplayPath = DisplayPath:sub(2)
   end
@@ -716,20 +604,16 @@ local function HandleClient(Client)
     Headers.HttpVersion
   )
 
-  local Backend, Key = GetBackend(Destination, Client)
-
+  local Backend, Key = GetBackend(Destination)
   if not Backend then
     Logger:Error("%s connection failed: %s", Destination.Host, Key)
-
     SendErrorResponse(Client, "502 Bad Gateway")
     Client:close()
     return
   end
 
-  local Request = ReconstructRequest(Headers)
-
   local Success
-  Success, Error = SendAll(Backend, Request)
+  Success, Error = SendAll(Backend, ReconstructRequest(Headers))
 
   if not Success then
     Logger:Error("Failed to send request: %s", Error)
@@ -739,12 +623,12 @@ local function HandleClient(Client)
     return
   end
 
-  local ResponseResult, ResponseError = ForwardResponse(Backend, Client, Headers.Method)
+  local Result, ResponseError, KeepAlive = ForwardResponse(Backend, Client, Headers.Method)
 
-  if not ResponseResult then
+  if not Result then
     Logger:Error("Failed to forward response: %s", ResponseError)
     CloseBackend(Key)
-  elseif ResponseError == "close" then
+  elseif not KeepAlive then
     CloseBackend(Key)
   end
 
@@ -769,7 +653,6 @@ local function RunServer()
 
   while true do
     local Client, Error = Server:accept()
-
     if Client then
       HandleClient(Client)
     else
