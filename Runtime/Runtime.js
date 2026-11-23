@@ -78,8 +78,6 @@ function RewriteElement(Element) {
     Element.tagName === "SCRIPT" &&
     Element.getAttribute("src")?.includes("_YipRuntime.js")
   ) {
-    Element.remove();
-    return;
   }
 
   const Document = Element.ownerDocument;
@@ -224,7 +222,7 @@ async function Initialize() {
   window._YipInitialized = true;
 
   try {
-    await navigator.serviceWorker.register("_YipServiceWorker.js");
+    await navigator.serviceWorker.register("/_YipServiceWorker.js");
     const Registration = await navigator.serviceWorker.ready;
 
     const SendBase = () =>
