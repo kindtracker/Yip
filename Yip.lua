@@ -7,15 +7,11 @@ local Copas = require("copas")
 local HostConnections, BackendBusy, Logger = {}, {}, {}
 local Server
 
-local RuntimeCode = '<script src="/_yip_runtime.js?_yip=true"></script>'
 local ProxyHost, ProxyPort = "localhost", 8000
+local DefaultCompressionLevel = 0
+
+local RuntimeCode = '<script src="/_yip_runtime.js?_yip=true"></script>'
 local ProxyAddress = "http://" .. ProxyHost .. ":" .. ProxyPort
-
-local CompressionFormats = {
-  gzip = { format = "gzip" },
-  deflate = { format = "zlib" },
-}
-
 local Benchmark = false
 
 function Logger:PrintTable(Table, Indent, Seen)
@@ -213,25 +209,30 @@ end
 
 local function Decompress(Body, Encoding)
   Encoding = (Encoding or ""):lower()
-  if CompressionFormats[Encoding] then
-    return Zlib.decompress(Body, CompressionFormats[Encoding])
-  end
-  if Encoding == "br" then
+  if Encoding == "gzip" or Encoding == "deflate" then
+    local Format = Encoding == "deflate" and "zlib" or Encoding
+    return Zlib.decompress(Body, { format = Format })
+  elseif Encoding == "br" then
     return Brotli.decompress(Body)
-  end
-  if Encoding == "" or Encoding == "identity" then
+  elseif Encoding == "" or Encoding == "identity" then
     return Body
   end
   return nil, "Unsupported content encoding: " .. Encoding
 end
 
-local function Compress(Body, Encoding)
+local function Compress(Body, Encoding, Level)
   Encoding = (Encoding or ""):lower()
-  if CompressionFormats[Encoding] then
-    return Zlib.compress(Body, CompressionFormats[Encoding])
-  end
-  if Encoding == "br" then
-    return Brotli.compress(Body)
+  Level = Level or DefaultCompressionLevel
+  if Encoding == "gzip" or Encoding == "deflate" then
+    local Format = Encoding == "deflate" and "zlib" or Encoding
+    return Zlib.compress(Body, {
+      format = Format,
+      level = Level,
+    })
+  elseif Encoding == "br" then
+    return Brotli.compress(Body, {
+      quality = Level,
+    })
   end
   if Encoding == "" or Encoding == "identity" then
     return Body
@@ -626,7 +627,7 @@ local function ForwardResponse(Backend, Client, Method)
     StartTime = LuaSocket.gettime()
 
     local Encoding = Headers.ContentEncoding or "identity"
-    local Ok, Decoded = pcall(Decompress, Body, Encoding)
+    local Ok, Decoded, DecompressError = pcall(Decompress, Body, Encoding)
 
     if Benchmark then
       Logger:Log("Decompress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
@@ -645,8 +646,11 @@ local function ForwardResponse(Backend, Client, Method)
       if Benchmark then
         Logger:Log("Compress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
       end
-    else
-      return nil, Ok
+      if not Ok then
+        return nil, Decoded
+      elseif not Decoded then
+        return nil, DecompressError
+      end
     end
 
     StartTime = LuaSocket.gettime()
@@ -809,7 +813,7 @@ local function HandleClient(Client)
 
   if not Success then
     Logger:Error("Failed to send request: %s", Error)
-    CloseBackend(Destination, Key)
+    CloseBackend(Backend, Key)
     SendErrorResponse(Client, "502 Bad Gateway")
     Client:close()
     return
@@ -824,9 +828,9 @@ local function HandleClient(Client)
 
   if not Result then
     Logger:Error("Failed to forward response: %s", ResponseError)
-    CloseBackend(Destination, Key)
+    CloseBackend(Backend, Key)
   elseif not KeepAlive then
-    CloseBackend(Destination, Key)
+    CloseBackend(Backend, Key)
   end
 
   if Benchmark then
