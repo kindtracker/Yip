@@ -2,9 +2,10 @@ local LuaSocket = require("socket")
 local LuaSSL = require("ssl")
 local Zlib = require("compress.zlib")
 local Brotli = require("compress.brotli")
+local Copas = require("copas")
 
-local Server = assert(LuaSocket.tcp4())
-local HostConnections, Logger = {}, {}
+local HostConnections, BackendBusy, Logger = {}, {}, {}
+local Server
 
 local RuntimeCode = '<script src="/_yip_runtime.js?_yip=true"></script>'
 local ProxyHost, ProxyPort = "localhost", 8000
@@ -237,12 +238,29 @@ local function Compress(Body, Encoding)
 end
 
 local function CreateBackend(Destination)
-  local Backend, Error = LuaSocket.tcp4()
-  if not Backend then
+  local Socket, Error = LuaSocket.tcp4()
+  if not Socket then
     return nil, Error
   end
 
+  local SSLParams
+  if Destination.Scheme == "https" then
+    SSLParams = {
+      wrap = {
+        mode = "client",
+        protocol = "any",
+        verify = "peer",
+        options = "all",
+        cafile = os.getenv("SSL_CERT_FILE") or "/etc/ssl/certs/ca-certificates.crt",
+        capath = os.getenv("SSL_CERT_DIR") or "/etc/ssl/certs",
+      },
+      sni = { names = Destination.Host },
+    }
+  end
+
+  local Backend = Copas.wrap(Socket, SSLParams)
   Backend:settimeout(10)
+
   local Success
   Success, Error = Backend:connect(Destination.Host, Destination.Port)
   if not Success then
@@ -250,38 +268,12 @@ local function CreateBackend(Destination)
     return nil, Error
   end
 
-  if Destination.Scheme == "https" then
-    local TLS
-    TLS, Error = LuaSSL.wrap(Backend, {
-      mode = "client",
-      protocol = "any",
-      verify = "peer",
-      options = "all",
-      cafile = os.getenv("SSL_CERT_FILE") or "/etc/ssl/certs/ca-certificates.crt",
-      capath = os.getenv("SSL_CERT_DIR") or "/etc/ssl/certs",
-    })
-
-    if not TLS then
-      Backend:close()
-      return nil, Error
-    end
-    TLS:settimeout(10)
-    TLS:sni(Destination.Host)
-
-    Success, Error = TLS:dohandshake()
-    if not Success then
-      TLS:close()
-      return nil, Error
-    end
-    Backend = TLS
-  end
-
   return Backend
 end
 
 local function GetBackend(Destination)
   local Key = string.format("%s://%s:%d", Destination.Scheme, Destination.Host, Destination.Port)
-  local Backend = HostConnections[Key]
+  local Backend = (not BackendBusy[Key]) and HostConnections[Key]
 
   if Backend then
     Backend:settimeout(0)
@@ -302,6 +294,7 @@ local function GetBackend(Destination)
   end
 
   HostConnections[Key] = Backend
+  BackendBusy[Key] = true
   return Backend, Key
 end
 
@@ -310,6 +303,7 @@ local function CloseBackend(Key)
   if Backend then
     Backend:close()
     HostConnections[Key] = nil
+    BackendBusy[Key] = nil
   end
 end
 
@@ -546,6 +540,7 @@ local function SendFile(Client, File)
 end
 
 local function HandleClient(Client)
+  Client = Copas.wrap(Client)
   Client:settimeout(10)
 
   local Headers, Error = ReadRequest(Client)
@@ -636,6 +631,11 @@ local function HandleClient(Client)
 end
 
 local function StartServer()
+  local Error
+
+  Server, Error = LuaSocket.tcp4()
+  Logger:FatalAssert(Server, Error)
+
   local Success, Error = Server:setoption("reuseaddr", true)
   Logger:FatalAssert(Success, Error)
 
@@ -650,15 +650,8 @@ end
 
 local function RunServer()
   StartServer()
-
-  while true do
-    local Client, Error = Server:accept()
-    if Client then
-      HandleClient(Client)
-    else
-      Logger:Error("Failed to accept client: %s", Error)
-    end
-  end
+  Copas.addserver(Server, HandleClient)
+  Copas.loop()
 end
 
 RunServer()
