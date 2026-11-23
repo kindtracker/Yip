@@ -8,7 +8,8 @@ local HostConnections, BackendBusy, Logger = {}, {}, {}
 local Server
 
 local ProxyHost, ProxyPort = "localhost", 8000
-local DefaultCompressionLevel = 0
+local DefaultZlibCompressionLevel = 5
+local DefaultBrotliCompressionLevel = 6
 
 local RuntimeCode = '<script src="/_yip_runtime.js?_yip=true"></script>'
 local ProxyAddress = "http://" .. ProxyHost .. ":" .. ProxyPort
@@ -222,14 +223,18 @@ end
 
 local function Compress(Body, Encoding, Level)
   Encoding = (Encoding or ""):lower()
-  Level = Level or DefaultCompressionLevel
+
   if Encoding == "gzip" or Encoding == "deflate" then
+    Level = Level or DefaultZlibCompressionLevel
+
     local Format = Encoding == "deflate" and "zlib" or Encoding
     return Zlib.compress(Body, {
       format = Format,
       level = Level,
     })
   elseif Encoding == "br" then
+    Level = Level or DefaultBrotliCompressionLevel
+
     return Brotli.compress(Body, {
       quality = Level,
     })
