@@ -110,6 +110,8 @@ end
 
 local function ReadRequest(Client)
   local Headers = {}
+  local Body = {}
+
   local Line, Error = Client:receive("*l")
   if not Line then
     return nil, Error
@@ -135,7 +137,22 @@ local function ReadRequest(Client)
     end
   end
 
-  return Headers
+  local TransferEncoding = (Headers.TransferEncoding or ""):lower()
+  local Length = tonumber(Headers.ContentLength)
+  if TransferEncoding:find("chunked", 1, true) then
+    Body, Error = ReadChunked(Client)
+  elseif Length then
+    Body, Error = ReadExact(Client, Length)
+  end
+
+  if Error then
+    return nil, Error
+  end
+
+  if type(Body) ~= "string" then
+    Body = table.concat(Body)
+  end
+  return Headers, Body
 end
 
 local function GetHostFromUrl(Url)
@@ -182,7 +199,7 @@ local function ResolveDestination(Headers)
   }
 end
 
-local function ReconstructRequest(Headers)
+local function ReconstructRequest(Headers, Body)
   local Request = { Headers.Method .. " " .. Headers.Path .. " " .. Headers.HttpVersion .. "\r\n" }
   local Internal = { Method = true, Path = true, HttpVersion = true, OriginalPath = true, ProxyPath = true }
 
@@ -193,6 +210,7 @@ local function ReconstructRequest(Headers)
   end
 
   Request[#Request + 1] = "\r\n"
+  Request[#Request + 1] = Body or ""
   return table.concat(Request)
 end
 

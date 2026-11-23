@@ -12,7 +12,8 @@ local function HandleClient(Client)
 
   StartTime = LuaSocket.gettime()
 
-  local Headers, Error = ReadRequest(Client)
+  local Headers, Body = ReadRequest(Client)
+  local Error = Body
   if not Headers then
     Logger:Error("Failed to read request: %s", Error)
     Client:close()
@@ -52,12 +53,6 @@ local function HandleClient(Client)
 
   Headers.Path, Headers.Host, Headers.Connection = Destination.Path, Destination.Host, "keep-alive"
 
-  if tonumber(Headers.ContentLength or "0") > 0 or Headers.TransferEncoding then
-    SendErrorResponse(Client, "501 Not Implemented", "Request bodies are not supported yet.")
-    Client:close()
-    return
-  end
-
   local DisplayPath = Headers.OriginalPath
   if DisplayPath:match("^/https?://") then
     DisplayPath = DisplayPath:sub(2)
@@ -92,7 +87,7 @@ local function HandleClient(Client)
   StartTime = LuaSocket.gettime()
 
   local Success
-  Success, Error = SendAll(Backend, ReconstructRequest(Headers))
+  Success, Error = SendAll(Backend, ReconstructRequest(Headers, Body))
 
   if not Success then
     Logger:Error("Failed to send request: %s", Error)
