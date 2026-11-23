@@ -54,19 +54,22 @@ local function HandleClient(Client)
   Headers.Path, Headers.Host, Headers.Connection = Destination.Path, Destination.Host, "keep-alive"
 
   local DisplayPath = Headers.OriginalPath
+  local DisplayDestinationPath =
+    string.format("%s://%s%s [%s]", Destination.Scheme, Destination.Host, Destination.Path, Headers.HttpVersion)
+
   if DisplayPath:match("^/https?://") then
     DisplayPath = DisplayPath:sub(2)
   end
 
-  Logger:Log(
-    "%s %s -> %s://%s%s [%s]",
-    Headers.Method,
-    DisplayPath,
-    Destination.Scheme,
-    Destination.Host,
-    Destination.Path,
-    Headers.HttpVersion
-  )
+  if #DisplayPath > 64 then
+    DisplayPath = DisplayPath:sub(1, 61) .. "..."
+  end
+
+  if #DisplayDestinationPath > 64 then
+    DisplayDestinationPath = DisplayDestinationPath:sub(1, 61) .. "..."
+  end
+
+  Logger:Log("%s %s -> %s", Headers.Method, DisplayPath, DisplayDestinationPath)
 
   if Benchmark then
     Logger:Log("Rewrite request took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
