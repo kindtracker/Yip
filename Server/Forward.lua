@@ -300,11 +300,10 @@ local function ForwardResponse(Backend, Client, Method)
       if Benchmark then
         Logger:Log("Compress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
       end
-      if not Ok then
-        return nil, Decoded
-      elseif not Decoded then
-        return nil, DecompressError
-      end
+    elseif not Ok then
+      return nil, Decoded
+    elseif not Decoded then
+      return nil, DecompressError
     end
 
     StartTime = LuaSocket.gettime()

@@ -19,7 +19,7 @@ self.addEventListener("fetch", (Event) => {
 
   if (
     Url.origin !== Origin ||
-    Url.pathname.startsWith("/_yip_") ||
+    Url.pathname.includes("_Yip") ||
     /^\/https?:\/\//i.test(Url.pathname)
   )
     return;

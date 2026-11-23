@@ -1,3 +1,5 @@
+const OriginalXhr = window.XMLHttpRequest;
+
 const Proxy = "http://localhost:8000/";
 const Attributes = [
   "href",
@@ -78,8 +80,6 @@ function RewriteElement(Element) {
     Element.tagName === "SCRIPT" &&
     Element.getAttribute("src")?.includes("_YipRuntime.js")
   ) {
-    Element.remove();
-    return;
   }
 
   const Document = Element.ownerDocument;
@@ -215,6 +215,25 @@ function InitializeDocument(Document, BaseUrl) {
   Observers.set(Document, Observer);
 }
 
+function OverrideXhr() {
+  console.log("tes");
+  class YipXhr extends OriginalXhr {
+    open(method, url, ...args) {
+      console.log("Xhr:", method, url);
+
+      return super.open(method, url, ...args);
+    }
+
+    send(...args) {
+      console.log("Sending Xhr");
+
+      return super.send(...args);
+    }
+  }
+
+  window.XMLHttpRequest = YipXhr;
+}
+
 async function Initialize() {
   if (!("serviceWorker" in navigator)) return;
   if (window._YipInitialized) {
@@ -239,6 +258,7 @@ async function Initialize() {
 
   const BaseUrl = Unproxy(location.href);
   InitializeDocument(document, BaseUrl);
+  OverrideXhr();
 }
 
 Initialize();

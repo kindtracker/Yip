@@ -1,3 +1,6 @@
+local Brotli = require("compress.brotli")
+local Zlib = require("compress.zlib")
+
 local Logger = {}
 
 function Logger:PrintTable(Table, Indent, Seen)
