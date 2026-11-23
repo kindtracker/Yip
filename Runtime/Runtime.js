@@ -78,6 +78,8 @@ function RewriteElement(Element) {
     Element.tagName === "SCRIPT" &&
     Element.getAttribute("src")?.includes("_YipRuntime.js")
   ) {
+    Element.remove();
+    return;
   }
 
   const Document = Element.ownerDocument;
