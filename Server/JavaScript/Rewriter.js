@@ -6,38 +6,33 @@ const Types = require("@babel/types");
 function RewriteJavaScript(Source) {
   const Ast = Parser.parse(Source, {
     sourceType: "unambiguous",
-    plugins: ["jsx"],
   });
 
   Traverse(Ast, {
+    ReferencedIdentifier(Path) {
+      if (Path.node.name !== "location") {
+        return;
+      }
+
+      if (Path.scope.hasBinding("location")) {
+        return;
+      }
+
+      Path.replaceWith(
+        Types.memberExpression(
+          Types.identifier("__Yip"),
+          Types.identifier("location"),
+        ),
+      );
+    },
+
     MemberExpression(Path) {
       const Node = Path.node;
 
       if (
-        (Types.isIdentifier(Node.object, { name: "window" }) ||
-          Types.isIdentifier(Node.object, { name: "document" })) &&
-        !Path.scope.hasBinding(Node.object.name) &&
-        ((!Node.computed &&
-          Types.isIdentifier(Node.property, { name: "location" })) ||
-          (Node.computed &&
-            Types.isStringLiteral(Node.property, { value: "location" })))
-      ) {
-        Path.replaceWith(
-          Types.memberExpression(
-            Types.identifier("__Yip"),
-            Types.identifier("location"),
-          ),
-        );
-      }
-    },
-
-    ReferencedIdentifier(Path) {
-      if (
-        Path.node.name === "location" &&
-        !Path.scope.hasBinding("location") &&
-        !Path.parentPath.isMemberExpression({
-          object: Path.node,
-        })
+        !Node.computed &&
+        Types.isIdentifier(Node.object, { name: "window" }) &&
+        Types.isIdentifier(Node.property, { name: "location" })
       ) {
         Path.replaceWith(
           Types.memberExpression(
