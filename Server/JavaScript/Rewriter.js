@@ -3,6 +3,32 @@ const Traverse = require("@babel/traverse").default;
 const Generate = require("@babel/generator").default;
 const Types = require("@babel/types");
 
+function RewriteWindowApi(Path, Name) {
+  const IsDirectReference =
+    Path.isIdentifier({ name: Name }) && !Path.scope.hasBinding(Name);
+  const IsWindowReference =
+    Path.parentPath.isMemberExpression() &&
+    Path.parentPath.node.object.type === "Identifier" &&
+    Path.parentPath.node.object.name === "window" &&
+    Path.parentPath.node.property.name === Name;
+  if (!IsDirectReference && !IsWindowReference) {
+    return;
+  }
+
+  const FunctionCall = Types.callExpression(
+    Types.memberExpression(
+      Types.identifier("window"),
+      Types.identifier("__YipGetWindowApi"),
+    ),
+    [Types.stringLiteral(Name)],
+  );
+  if (IsWindowReference) {
+    Path.parentPath.replaceWith(FunctionCall);
+  } else {
+    Path.replaceWith(FunctionCall);
+  }
+}
+
 function RewriteJavaScript(Source) {
   const Ast = Parser.parse(Source, {
     sourceType: "unambiguous",
@@ -10,37 +36,7 @@ function RewriteJavaScript(Source) {
 
   Traverse(Ast, {
     ReferencedIdentifier(Path) {
-      if (Path.node.name !== "location") {
-        return;
-      }
-
-      if (Path.scope.hasBinding("location")) {
-        return;
-      }
-
-      Path.replaceWith(
-        Types.memberExpression(
-          Types.identifier("__Yip"),
-          Types.identifier("location"),
-        ),
-      );
-    },
-
-    MemberExpression(Path) {
-      const Node = Path.node;
-
-      if (
-        !Node.computed &&
-        Types.isIdentifier(Node.object, { name: "window" }) &&
-        Types.isIdentifier(Node.property, { name: "location" })
-      ) {
-        Path.replaceWith(
-          Types.memberExpression(
-            Types.identifier("__Yip"),
-            Types.identifier("location"),
-          ),
-        );
-      }
+      RewriteWindowApi(Path, "location");
     },
   });
 

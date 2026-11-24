@@ -1,7 +1,7 @@
 const RewriteJavaScript = require("./Rewriter");
 
 const Source = `
-const Meow = location.href;
+const Meow = window.location.href;
 console.log(Meow);
 `;
 
