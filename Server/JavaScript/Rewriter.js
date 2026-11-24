@@ -9,7 +9,7 @@ function RewriteWindowApi(Path, Name) {
   const Parent = Path.parentPath;
 
   const IsDirectReference =
-    Path.isReferencedIdentifier({ name: Name }) && !Path.scope.hasBinding(Name);
+    Path.isReferencedIdentifier({ name: Name }) && !Path.scope.getBinding(Name);
 
   const IsWindowReference =
     Parent?.isMemberExpression() &&
