@@ -234,7 +234,7 @@ local function ForwardResponse(Backend, Client, Method)
   local HasBody = Method ~= "HEAD" and Status ~= 204 and Status ~= 304 and not (Status >= 100 and Status < 200)
 
   if Benchmark then
-    Logger:Log("Read and parse response header took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+    Logger:Log("Wait for response header took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
   end
   StartTime = LuaSocket.gettime()
 
@@ -450,6 +450,10 @@ local function CloseBackend(Backend, Key)
   end
 end
 
+local function ReleaseBackend(Backend)
+  BackendBusy[Backend] = nil
+end
+
 local Forward = {
   ReadExact = ReadExact,
   ReadResponseHeaders = ReadResponseHeaders,
@@ -463,6 +467,7 @@ local Forward = {
   CreateBackend = CreateBackend,
   GetBackend = GetBackend,
   CloseBackend = CloseBackend,
+  ReleaseBackend = ReleaseBackend,
 }
 
 for Key, Value in pairs(Forward) do

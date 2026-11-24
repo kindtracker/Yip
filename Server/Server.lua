@@ -57,16 +57,22 @@ local function HandleClient(Client)
   local DisplayDestinationPath =
     string.format("%s://%s%s [%s]", Destination.Scheme, Destination.Host, Destination.Path, Headers.HttpVersion)
 
-  if DisplayPath:match("^/https?://") then
-    DisplayPath = DisplayPath:sub(2)
-  end
+  local MaxLength = 160
+  local FixedLength = #Headers.Method + #" -> "
+  local AvailableLength = MaxLength - FixedLength
 
-  if #DisplayPath > 64 then
-    DisplayPath = DisplayPath:sub(1, 61) .. "..."
-  end
+  local PathLength = #DisplayPath
+  local DestinationLength = #DisplayDestinationPath
 
-  if #DisplayDestinationPath > 64 then
-    DisplayDestinationPath = DisplayDestinationPath:sub(1, 61) .. "..."
+  local TotalLength = FixedLength + PathLength + DestinationLength
+  if TotalLength > MaxLength then
+    local Available = AvailableLength - 6
+
+    local PathBudget = math.ceil(Available / 2)
+    local DestinationBudget = math.floor(Available / 2)
+
+    DisplayPath = DisplayPath:sub(1, PathBudget) .. "..."
+    DisplayDestinationPath = DisplayDestinationPath:sub(1, DestinationBudget) .. "..."
   end
 
   Logger:Log("%s %s -> %s", Headers.Method, DisplayPath, DisplayDestinationPath)
@@ -110,7 +116,9 @@ local function HandleClient(Client)
   if not Result then
     Logger:Error("Failed to forward response: %s", ResponseError)
     CloseBackend(Backend, Key)
-  elseif not KeepAlive then
+  elseif KeepAlive then
+    ReleaseBackend(Backend)
+  else
     CloseBackend(Backend, Key)
   end
 
@@ -122,6 +130,7 @@ local function HandleClient(Client)
     Logger:Log("Handle client took %.3f ms", (LuaSocket.gettime() - ClientStartTime) * 1000)
   end
 
+  -- TODO: Implement keep-alive
   Client:close()
 end
 

@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@babel/generator": "^8.1.3",
+    "@babel/parser": "^8.1.3",
+    "@babel/traverse": "^8.1.3",
+    "@babel/types": "^8.1.3"
+  }
+}
