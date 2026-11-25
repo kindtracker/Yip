@@ -289,7 +289,7 @@ local function ForwardResponse(JavaScriptClient, Backend, Client, Method)
     local Ok, Decoded, DecompressError = pcall(Decompress, Body, Encoding)
 
     if Benchmark then
-      Logger:Log("Decompress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+      Logger:Log("Decompress response took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
     end
 
     StartTime = LuaSocket.gettime()
@@ -312,7 +312,7 @@ local function ForwardResponse(JavaScriptClient, Backend, Client, Method)
       end
 
       if Benchmark then
-        Logger:Log("Compress response and inject runtime took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
+        Logger:Log("Compress response and rewrite file took %.3f ms", (LuaSocket.gettime() - StartTime) * 1000)
       end
     elseif not Ok then
       return nil, Decoded

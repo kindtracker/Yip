@@ -7,19 +7,35 @@ const RewriteMessage = 1;
 const ResultMessage = 2;
 const ErrorMessage = 3;
 
+const Logger = {
+  _Log(Level, Color, ...Args) {
+    process.stdout.write("\x1b[1;37mYip:\x1b[0m ");
+    process.stderr.write(
+      `\x1b[1;${Color}m${Level}:\x1b[0m ${Args.join(" ")}\n`,
+    );
+  },
+
+  Log(...Args) {
+    this._Log("Info", 34, ...Args);
+  },
+
+  Error(...Args) {
+    this._Log("Error", 31, ...Args);
+  },
+};
+
 const Server = Net.createServer((Socket) => {
   let Data = Buffer.alloc(0);
 
   Socket.on("data", (Chunk) => {
     Data = Buffer.concat([Data, Chunk]);
-    console.log("Received bytes:", Chunk.length);
 
     while (Data.length >= 4) {
       const Length = Data.readUInt32BE(0);
 
       if (Length < 5 || Length > 16 * 1024 * 1024) {
-        console.error(
-          "Yip: JavaScript Server: Error: Lua server message exceeds maximum allowed size or is smaller than the minimum allowed size",
+        Logger.Error(
+          "Lua server message exceeds maximum allowed size or is smaller than the minimum allowed size",
         );
         Socket.destroy();
         return;
@@ -38,9 +54,6 @@ const Server = Net.createServer((Socket) => {
 
       try {
         if (Type === RewriteMessage) {
-          console.log(
-            `Yip: JavaScript Server: Info: Rewriting JavaScript code (${Payload.toString("utf8").length} characters)`,
-          );
           ResponsePayload = Buffer.from(
             RewriteJavaScript(Payload.toString("utf8")),
           );
@@ -49,6 +62,8 @@ const Server = Net.createServer((Socket) => {
           ResponsePayload = Buffer.alloc(0);
         }
       } catch (Error) {
+        Logger.Error("Failed to respond to message:", Error.message);
+
         ResponseType = ResultMessage;
         ResponsePayload = Buffer.from(Error.message);
       }
@@ -72,7 +87,5 @@ try {
 }
 
 Server.listen("/tmp/Yip.sock", () => {
-  console.log(
-    "Yip: JavaScript Server: Info: Tcp Server is listening on /tmp/Yip.sock",
-  );
+  Logger.Log("JavaScript Server is listening on", "/tmp/Yip.sock");
 });

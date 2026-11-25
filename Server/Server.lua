@@ -159,7 +159,7 @@ local function StartServer()
   JavaScriptClient, Error = Copas.wrap(JavaScriptClient)
   Logger:FatalAssert(JavaScriptClient, Error)
 
-  Logger:Log("Server is listening on %s/", ProxyAddress)
+  Logger:Log("Web/Lua Server is listening on %s/", ProxyAddress)
 end
 
 local function RunServer()
