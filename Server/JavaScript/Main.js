@@ -5,12 +5,14 @@ const Fs = require("node:fs");
 const PingMessage = 0;
 const RewriteMessage = 1;
 const ResultMessage = 2;
+const ErrorMessage = 3;
 
 const Server = Net.createServer((Socket) => {
   let Data = Buffer.alloc(0);
 
   Socket.on("data", (Chunk) => {
     Data = Buffer.concat([Data, Chunk]);
+    console.log("Received bytes:", Chunk.length);
 
     while (Data.length >= 4) {
       const Length = Data.readUInt32BE(0);
@@ -42,7 +44,7 @@ const Server = Net.createServer((Socket) => {
           ResponsePayload = Buffer.from(
             RewriteJavaScript(Payload.toString("utf8")),
           );
-        } else if (Type === Types.PING) {
+        } else if (Type === PingMessage) {
           ResponseType = PingMessage;
           ResponsePayload = Buffer.alloc(0);
         }

@@ -1,7 +1,8 @@
+local LuaSocketUnix = require("socket.unix")
 local LuaSocket = require("socket")
 local Copas = require("copas")
 
-local Server
+local Server, JavaScriptClient
 
 local function HandleClient(Client)
   local ClientStartTime = LuaSocket.gettime()
@@ -111,7 +112,7 @@ local function HandleClient(Client)
   end
   StartTime = LuaSocket.gettime()
 
-  local Result, ResponseError, KeepAlive = ForwardResponse(Backend, Client, Headers.Method)
+  local Result, ResponseError, KeepAlive = ForwardResponse(JavaScriptClient, Backend, Client, Headers.Method)
 
   if not Result then
     Logger:Error("Failed to forward response: %s", ResponseError)
@@ -148,6 +149,15 @@ local function StartServer()
 
   Success, Error = Server:listen()
   Logger:FatalAssert(Success, Error)
+
+  JavaScriptClient, Error = LuaSocketUnix()
+  Logger:FatalAssert(JavaScriptClient, Error)
+
+  Success, Error = JavaScriptClient:connect("/tmp/Yip.sock")
+  Logger:FatalAssert(Success, Error)
+
+  JavaScriptClient, Error = Copas.wrap(JavaScriptClient)
+  Logger:FatalAssert(JavaScriptClient, Error)
 
   Logger:Log("Server is listening on %s/", ProxyAddress)
 end

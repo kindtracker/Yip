@@ -283,6 +283,55 @@ local function InjectRuntime(Body)
   return Count == 0 and RuntimeCode .. Body or Result
 end
 
+local function RewriteJavaScript(JavaScriptClient, RequestId, Source)
+  local Payload = string.char(1) .. Uint32(RequestId) .. Source
+  local Message = Uint32(#Payload) .. Payload
+  SendAll(JavaScriptClient, Message)
+
+  local Header, Error = JavaScriptClient:receive(4)
+  if not Header then
+    return nil, Error
+  end
+
+  local Length = ReadUint32(Header, 1)
+  if Length < 5 or Length > 16 * 1024 * 1024 then
+    return nil, "Invalid message size"
+  end
+
+  local Response, Error = JavaScriptClient:receive(Length)
+  if not Response then
+    return nil, Error
+  end
+
+  local Type = Response:byte(1)
+  local ResponseId = ReadUint32(Response, 2)
+  local Result = Response:sub(6)
+
+  if ResponseId ~= RequestId then
+    return nil, "Request Id mismatch"
+  end
+  if Type == 3 then
+    return nil, Result
+  end
+
+  return Result
+end
+
+local function Uint32(Value)
+  return string.char(
+    bit.band(bit.rshift(Value, 24), 0xFF),
+    bit.band(bit.rshift(Value, 16), 0xFF),
+    bit.band(bit.rshift(Value, 8), 0xFF),
+    bit.band(Value, 0xFF)
+  )
+end
+
+local function ReadUint32(Data, Offset)
+  local A, B, C, D = Data:byte(Offset, Offset + 3)
+
+  return A * 16777216 + B * 65536 + C * 256 + D
+end
+
 local Helpers = {
   Logger = Logger,
   SendAll = SendAll,
@@ -297,6 +346,9 @@ local Helpers = {
   RewriteLocation = RewriteLocation,
   ReconstructResponse = ReconstructResponse,
   InjectRuntime = InjectRuntime,
+  RewriteJavaScript = RewriteJavaScript,
+  Uint32 = Uint32,
+  ReadUint32 = ReadUint32,
 }
 
 for Key, Value in pairs(Helpers) do

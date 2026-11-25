@@ -2,6 +2,7 @@ local LuaSocket = require("socket")
 local Copas = require("copas")
 
 local HostConnections, BackendBusy = {}, {}
+local CurrentRequestId = 0
 
 local function ReadExact(Source, Count)
   local Buffer = {}
@@ -218,10 +219,11 @@ local function ReadResponseHeaders(Backend)
   return Headers
 end
 
-local function ForwardResponse(Backend, Client, Method)
+local function ForwardResponse(JavaScriptClient, Backend, Client, Method)
   local StartTime = 0
-
   StartTime = LuaSocket.gettime()
+
+  CurrentRequestId = CurrentRequestId + 1
 
   local Headers, Error = ReadResponseHeaders(Backend)
   if not Headers then
@@ -255,9 +257,12 @@ local function ForwardResponse(Backend, Client, Method)
 
   local TransferEncoding = (Headers.TransferEncoding or ""):lower()
   local Length = tonumber(Headers.ContentLength)
-  local IsHTML = (Headers.ContentType or ""):lower():find("text/html", 1, true) and Status ~= 206
+  local ContentType = (Headers.ContentType or ""):lower()
+  local IsHtml = ContentType:find("text/html", 1, true) and Status ~= 206
+  local IsJavaScript = (ContentType:find("application/javascript", 1, true) or ContentType:find("text/javascript"))
+    and Status ~= 206
 
-  if IsHTML then
+  if IsHtml or IsJavaScript then
     StartTime = LuaSocket.gettime()
 
     local Body
@@ -289,9 +294,18 @@ local function ForwardResponse(Backend, Client, Method)
 
     StartTime = LuaSocket.gettime()
     if Ok and Decoded then
-      local Modified = InjectRuntime(Decoded)
-      local CompressOk, Compressed = pcall(Compress, Modified, Encoding)
+      local Modified
+      if IsHtml then
+        Modified, Error = InjectRuntime(Decoded)
+      elseif IsJavaScript then
+        Modified, Error = RewriteJavaScript(JavaScriptClient, CurrentRequestId, Decoded)
+      end
 
+      if Error then
+        return nil, Error
+      end
+
+      local CompressOk, Compressed = pcall(Compress, Modified, Encoding)
       if CompressOk and Compressed then
         Body = Compressed
         Headers.ETag, Headers.ContentMd5 = nil, nil
