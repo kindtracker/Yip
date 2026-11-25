@@ -1,6 +1,6 @@
 const OriginalXhr = window.XMLHttpRequest;
 
-const Proxy = "http://localhost:8000/";
+window._NycuryProxy = "http://localhost:8000/";
 const Attributes = [
   "href",
   "src",
@@ -28,8 +28,9 @@ const Observers = new WeakMap();
 const Frames = new WeakSet();
 
 function Unproxy(Url) {
-  return Url.startsWith(Proxy) && /^https?:\/\//i.test(Url.slice(Proxy.length))
-    ? Url.slice(Proxy.length)
+  return Url.startsWith(window._NycuryProxy) &&
+    /^https?:\/\//i.test(Url.slice(window._NycuryProxy.length))
+    ? Url.slice(window._NycuryProxylength)
     : Url;
 }
 
@@ -40,11 +41,14 @@ function Base(Document) {
 function Rewrite(Url, BaseUrl) {
   Url = Url.trim();
 
-  if (!Url || Url.startsWith("#") || Url.startsWith(Proxy)) return Url;
+  if (!Url || Url.startsWith("#") || Url.startsWith(window._NycuryProxy))
+    return Url;
 
   try {
     const Result = new URL(Url, BaseUrl);
-    return /^https?:$/.test(Result.protocol) ? Proxy + Result.href : Url;
+    return /^https?:$/.test(Result.protocol)
+      ? window._NycuryProxy + Result.href
+      : Url;
   } catch {
     return Url;
   }
@@ -80,6 +84,8 @@ function RewriteElement(Element) {
     Element.tagName === "SCRIPT" &&
     Element.getAttribute("src")?.includes("_NycuryRuntime.js")
   ) {
+    Element.remove();
+    return;
   }
 
   const Document = Element.ownerDocument;
@@ -220,7 +226,7 @@ function OverrideXhr(BaseUrl) {
     open(Method, _Url, ...Arguments) {
       const Url = new URL(_Url, BaseUrl);
       const Target = new URL(Url.pathname + Url.search, BaseUrl);
-      const ProxyUrl = Proxy + Target.href;
+      const ProxyUrl = window._NycuryProxy + Target.href;
 
       return super.open(Method, ProxyUrl, ...Arguments);
     }
