@@ -3,6 +3,8 @@ const Traverse = require("@babel/traverse").default;
 const Generate = require("@babel/generator").default;
 const Types = require("@babel/types");
 
+const Terser = require("terser");
+
 const Globals = new Set([]);
 
 function RewriteWindowApi(Path, Name) {
@@ -38,7 +40,7 @@ function RewriteWindowApi(Path, Name) {
   }
 }
 
-function RewriteJavaScript(Source) {
+async function RewriteJavaScript(Source) {
   const Ast = Parser.parse(Source, {
     sourceType: "unambiguous",
     plugins: ["dynamicImport", "importMeta"],
@@ -65,7 +67,86 @@ function RewriteJavaScript(Source) {
     },
   });
 
-  return Generate(Ast).code;
+  let Code = Generate(Ast).code;
+  const Result = await Terser.minify(Code, {
+    ecma: 5,
+    module: false,
+    toplevel: true,
+
+    compress: {
+      defaults: true,
+      passes: 4,
+      unsafe: false,
+
+      arguments: true,
+      arrows: true,
+      booleans: true,
+      booleans_as_integers: true,
+      comparisons: true,
+      conditionals: true,
+      evaluate: true,
+      lhs_constants: true,
+      negate_iife: true,
+      collapse_vars: true,
+      hoist_funs: true,
+      hoist_props: true,
+      hoist_vars: true,
+      join_vars: true,
+      reduce_funcs: true,
+      reduce_vars: true,
+      unused: true,
+      dead_code: true,
+      if_return: true,
+      loops: true,
+      switches: true,
+      sequences: true,
+      side_effects: true,
+      computed_props: true,
+      properties: true,
+      pure_getters: "strict",
+      inline: true,
+      keep_fargs: false,
+      keep_fnames: false,
+      keep_classnames: false,
+      directives: true,
+      drop_debugger: true,
+      keep_infinity: false,
+      expression: false,
+      builtins_pure: false,
+      pure_new: false,
+      unsafe_arrows: false,
+      unsafe_comps: false,
+      unsafe_Function: false,
+      unsafe_math: false,
+      unsafe_methods: false,
+      unsafe_proto: false,
+      unsafe_regexp: false,
+      unsafe_undefined: false,
+      toplevel: true,
+    },
+
+    mangle: {
+      toplevel: true,
+      properties: false,
+      keep_classnames: false,
+      keep_fnames: false,
+      safari10: true,
+    },
+
+    format: {
+      comments: false,
+      beautify: false,
+      semicolons: true,
+      ascii_only: false,
+      inline_script: true,
+      quote_style: 0,
+      wrap_iife: false,
+    },
+  });
+
+  return Result.code;
+
+  return Code;
 }
 
 module.exports = RewriteJavaScript;

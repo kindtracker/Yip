@@ -27,7 +27,7 @@ const Logger = {
 const Server = Net.createServer((Socket) => {
   let Data = Buffer.alloc(0);
 
-  Socket.on("data", (Chunk) => {
+  Socket.on("data", async (Chunk) => {
     Data = Buffer.concat([Data, Chunk]);
 
     while (Data.length >= 4) {
@@ -54,9 +54,8 @@ const Server = Net.createServer((Socket) => {
 
       try {
         if (Type === RewriteMessage) {
-          ResponsePayload = Buffer.from(
-            RewriteJavaScript(Payload.toString("utf8")),
-          );
+          const Code = await RewriteJavaScript(Payload.toString("utf8"));
+          ResponsePayload = Buffer.from(Code);
         } else if (Type === PingMessage) {
           ResponseType = PingMessage;
           ResponsePayload = Buffer.alloc(0);
