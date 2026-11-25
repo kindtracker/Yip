@@ -9,7 +9,7 @@ const ErrorMessage = 3;
 
 const Logger = {
   _Log(Level, Color, ...Args) {
-    process.stdout.write("\x1b[1;37mYip:\x1b[0m ");
+    process.stdout.write("\x1b[1;37mNycury:\x1b[0m ");
     process.stderr.write(
       `\x1b[1;${Color}m${Level}:\x1b[0m ${Args.join(" ")}\n`,
     );
@@ -81,11 +81,11 @@ const Server = Net.createServer((Socket) => {
 });
 
 try {
-  Fs.unlinkSync("/tmp/Yip.sock");
+  Fs.unlinkSync("/tmp/Nycury.sock");
 } catch (Error) {
   if (Error.code !== "ENOENT") throw Error;
 }
 
-Server.listen("/tmp/Yip.sock", () => {
-  Logger.Log("JavaScript Server is listening on", "/tmp/Yip.sock");
+Server.listen("/tmp/Nycury.sock", () => {
+  Logger.Log("JavaScript Server is listening on", "/tmp/Nycury.sock");
 });

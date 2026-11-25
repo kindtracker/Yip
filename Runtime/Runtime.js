@@ -78,7 +78,7 @@ function RewriteElement(Element) {
 
   if (
     Element.tagName === "SCRIPT" &&
-    Element.getAttribute("src")?.includes("_YipRuntime.js")
+    Element.getAttribute("src")?.includes("_NycuryRuntime.js")
   ) {
   }
 
@@ -216,7 +216,7 @@ function InitializeDocument(Document, BaseUrl) {
 }
 
 function OverrideXhr(BaseUrl) {
-  class YipXhr extends OriginalXhr {
+  class NycuryXhr extends OriginalXhr {
     open(Method, _Url, ...Arguments) {
       const Url = new URL(_Url, BaseUrl);
       const Target = new URL(Url.pathname + Url.search, BaseUrl);
@@ -230,19 +230,19 @@ function OverrideXhr(BaseUrl) {
     }
   }
 
-  window.XMLHttpRequest = YipXhr;
+  window.XMLHttpRequest = NycuryXhr;
 }
 
 async function Initialize() {
   if (!("serviceWorker" in navigator)) return;
-  if (window._YipInitialized) {
+  if (window._NycuryInitialized) {
     return;
   }
 
-  window._YipInitialized = true;
+  window._NycuryInitialized = true;
 
   try {
-    await navigator.serviceWorker.register("/_YipServiceWorker.js");
+    await navigator.serviceWorker.register("/_NycuryServiceWorker.js");
     const Registration = await navigator.serviceWorker.ready;
 
     const SendBase = () =>

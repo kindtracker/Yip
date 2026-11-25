@@ -35,12 +35,12 @@ end
 
 function Logger:Log(...)
   io.stdout:flush()
-  io.stderr:write("\27[1;37mYip:\27[0m \27[1;34mInfo:\27[0m " .. string.format(...) .. "\n")
+  io.stderr:write("\27[1;37mNycury:\27[0m \27[1;34mInfo:\27[0m " .. string.format(...) .. "\n")
 end
 
 function Logger:Error(...)
   io.stdout:flush()
-  io.stderr:write("\27[1;37mYip:\27[0m \27[1;31mError:\27[0m " .. string.format(...) .. "\n")
+  io.stderr:write("\27[1;37mNycury:\27[0m \27[1;31mError:\27[0m " .. string.format(...) .. "\n")
 end
 
 function Logger:FatalError(...)
@@ -276,7 +276,7 @@ local function ReconstructResponse(Headers)
 end
 
 local function InjectRuntime(Body)
-  if Body:find("_YipRuntime.js", 1, true) then
+  if Body:find("_NycuryRuntime.js", 1, true) then
     return Body
   end
   local Result, Count = Body:gsub("(<head[^>]*>)", "%1" .. RuntimeCode, 1)

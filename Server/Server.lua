@@ -29,8 +29,8 @@ local function HandleClient(Client)
   Headers.OriginalPath = Headers.Path
 
   local LocalFiles = {
-    ["/_YipRuntime.js"] = "Runtime/Runtime.min.js",
-    ["/_YipServiceWorker.js"] = "Runtime/ServiceWorker.min.js",
+    ["/_NycuryRuntime.js"] = "Runtime/Runtime.min.js",
+    ["/_NycuryServiceWorker.js"] = "Runtime/ServiceWorker.min.js",
   }
 
   if LocalFiles[Headers.OriginalPath] then
@@ -153,7 +153,7 @@ local function StartServer()
   JavaScriptClient, Error = LuaSocketUnix()
   Logger:FatalAssert(JavaScriptClient, Error)
 
-  Success, Error = JavaScriptClient:connect("/tmp/Yip.sock")
+  Success, Error = JavaScriptClient:connect("/tmp/Nycury.sock")
   Logger:FatalAssert(Success, Error)
 
   JavaScriptClient, Error = Copas.wrap(JavaScriptClient)

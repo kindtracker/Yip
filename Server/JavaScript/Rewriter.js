@@ -26,7 +26,7 @@ function RewriteWindowApi(Path, Name) {
   const Member = Types.memberExpression(
     Types.memberExpression(
       Types.identifier("window"),
-      Types.identifier("_yipenv"),
+      Types.identifier("_nycuryenv"),
     ),
     Types.identifier(Name),
   );
@@ -51,7 +51,7 @@ function RewriteJavaScript(Source) {
           (Parent) =>
             Parent.isMemberExpression() &&
             Parent.get("object").isIdentifier({ name: "window" }) &&
-            Parent.get("property").isIdentifier({ name: "_yipenv" }),
+            Parent.get("property").isIdentifier({ name: "_nycuryenv" }),
         )
       ) {
         return;

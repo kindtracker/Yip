@@ -1,2 +1,2 @@
-local Yip = require("Server/Yip")
-Yip()
+local Nycury = require("Server.Nycury")
+Nycury()
