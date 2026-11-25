@@ -29,8 +29,8 @@ local function HandleClient(Client)
   Headers.OriginalPath = Headers.Path
 
   local LocalFiles = {
-    ["/_YipRuntime.js"] = "Runtime/Runtime.js",
-    ["/_YipServiceWorker.js"] = "Runtime/ServiceWorker.js",
+    ["/_YipRuntime.js"] = "Runtime/Runtime.min.js",
+    ["/_YipServiceWorker.js"] = "Runtime/ServiceWorker.min.js",
   }
 
   if LocalFiles[Headers.OriginalPath] then
