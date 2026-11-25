@@ -1,10 +1,6 @@
-const Proxy = "http://localhost:8000/";
-const Origin = new URL(Proxy).origin;
-const Bases = new Map();
-
 self.addEventListener("message", (Event) => {
-  if (Event.data?.Type === "SetBaseUrl" && Event.source?.id)
-    Bases.set(Event.source.id, Event.data.BaseUrl);
+  if (Event.data?.Type === "SetPageUrl" && Event.source?.id)
+    PageUrls.set(Event.source.id, Event.data.Value);
 });
 
 self.addEventListener("install", (Event) =>

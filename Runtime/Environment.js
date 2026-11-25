@@ -1,6 +1,6 @@
 const OriginalDocument = window.document;
 
-const Nycury = (() => {
+const NycuryP = (() => {
   const Routes = new Map();
 
   function Route(Context, Operation, Key, Handler) {
@@ -38,7 +38,12 @@ const Nycury = (() => {
           Receiver,
         });
         if (Result.Handled) return Result.Value;
-        return Reflect.get(Target, Key, Receiver);
+
+        const Value = Reflect.get(Target, Key, Target);
+        if (typeof Value === "function") {
+          return Value.bind(Target);
+        }
+        return Value;
       },
 
       set(Target, Key, Value, Receiver) {
@@ -49,7 +54,7 @@ const Nycury = (() => {
           Receiver,
         });
         if (Result.Handled) return Result.Value;
-        return Reflect.set(Target, Key, Value, Receiver);
+        return Reflect.set(Target, Key, Value, Target);
       },
 
       has(Target, Key) {
@@ -88,15 +93,16 @@ const Nycury = (() => {
     CreateProxy,
   };
 })();
+window.Nycury.P = NycuryP;
 
 const DocumentContext = Symbol("Document");
 const EnvironmentContext = Symbol("Environment");
 
 const BaseUrl = Nycury.Unproxy(OriginalDocument.location.href);
-Nycury.Route(DocumentContext, "get", "URL", () => BaseUrl);
-Nycury.Route(DocumentContext, "get", "documentURI", () => BaseUrl);
+Nycury.P.Route(DocumentContext, "get", "URL", () => BaseUrl);
+Nycury.P.Route(DocumentContext, "get", "documentURI", () => BaseUrl);
 
-const NycuryDocument = Nycury.CreateProxy(DocumentContext, OriginalDocument);
-Nycury.Route(EnvironmentContext, "get", "document", () => NycuryDocument);
+const NycuryDocument = Nycury.P.CreateProxy(DocumentContext, OriginalDocument);
+Nycury.P.Route(EnvironmentContext, "get", "document", () => NycuryDocument);
 
-window._nycuryenv = Nycury.CreateProxy(EnvironmentContext, window);
+window._nycuryenv = Nycury.P.CreateProxy(EnvironmentContext, window);

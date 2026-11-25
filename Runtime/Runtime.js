@@ -1,269 +1,312 @@
-const OriginalXhr = window.XMLHttpRequest;
+const Nycury = (() => {
+  const ProxyOrigin = "http://localhost:8000/";
 
-window._NycuryProxy = "http://localhost:8000/";
-const Attributes = [
-  "href",
-  "src",
-  "srcset",
-  "imagesrcset",
-  "action",
-  "formaction",
-  "poster",
-  "data",
-  "cite",
-  "codebase",
-  "manifest",
-  "longdesc",
-  "background",
-  "xlink:href",
-  "itemid",
-  "attributionsrc",
-  "ping",
-  "profile",
-  "usemap",
-];
+  const Attributes = [
+    "href",
+    "src",
+    "srcset",
+    "imagesrcset",
+    "action",
+    "formaction",
+    "poster",
+    "data",
+    "cite",
+    "codebase",
+    "manifest",
+    "longdesc",
+    "background",
+    "xlink:href",
+    "itemid",
+    "attributionsrc",
+    "ping",
+    "profile",
+    "usemap",
+  ];
 
-const Bases = new WeakMap();
-const Observers = new WeakMap();
-const Frames = new WeakSet();
+  const AttributeSet = new Set(Attributes);
 
-function Unproxy(Url) {
-  return Url.startsWith(window._NycuryProxy) &&
-    /^https?:\/\//i.test(Url.slice(window._NycuryProxy.length))
-    ? Url.slice(window._NycuryProxylength)
-    : Url;
-}
+  const Observers = new WeakMap();
+  const Frames = new WeakSet();
+  const InstalledDocuments = new WeakSet();
+  const InstalledWindows = new WeakSet();
 
-function Base(Document) {
-  return Bases.get(Document) || Unproxy(Document.location.href);
-}
+  function Unproxy(Url) {
+    if (
+      Url.startsWith(ProxyOrigin) &&
+      /^https?:\/\//i.test(Url.slice(ProxyOrigin.length))
+    ) {
+      return Url.slice(ProxyOrigin.length);
+    }
 
-function Rewrite(Url, BaseUrl) {
-  Url = Url.trim();
-
-  if (!Url || Url.startsWith("#") || Url.startsWith(window._NycuryProxy))
-    return Url;
-
-  try {
-    const Result = new URL(Url, BaseUrl);
-    return /^https?:$/.test(Result.protocol)
-      ? window._NycuryProxy + Result.href
-      : Url;
-  } catch {
     return Url;
   }
-}
 
-function RewriteList(Value, BaseUrl) {
-  return Value.split(/\s+/)
-    .map((Url) => Rewrite(Url, BaseUrl))
-    .join(" ");
-}
+  function RewriteUrl(State, Url) {
+    Url = String(Url).trim();
 
-function RewriteSrcset(Value, BaseUrl) {
-  return Value.replace(
-    /(\S+)(\s+\d+[wx])?/g,
-    (_, Url, Size = "") => Rewrite(Url.replace(/,$/, ""), BaseUrl) + Size,
-  );
-}
+    if (!Url || Url.startsWith(ProxyOrigin)) return Url;
 
-function RewriteValue(Attribute, Value, BaseUrl) {
-  if (["srcset", "imagesrcset"].includes(Attribute))
-    return RewriteSrcset(Value, BaseUrl);
+    try {
+      const Result = new URL(Url, State.PageUrl);
 
-  if (["ping", "attributionsrc"].includes(Attribute))
-    return RewriteList(Value, BaseUrl);
+      if (!/^https?:$/.test(Result.protocol)) return Url;
 
-  return Rewrite(Value, BaseUrl);
-}
-
-function RewriteElement(Element) {
-  if (!(Element instanceof Element.ownerDocument.defaultView.Element)) return;
-
-  if (
-    Element.tagName === "SCRIPT" &&
-    Element.getAttribute("src")?.includes("_NycuryRuntime.js")
-  ) {
-    Element.remove();
-    return;
+      return ProxyOrigin + Result.href;
+    } catch {
+      return Url;
+    }
   }
 
-  const Document = Element.ownerDocument;
-  const BaseUrl = Base(Document);
-
-  for (const Attribute of Attributes) {
-    if (!Element.hasAttribute(Attribute)) continue;
-
-    const Value = Element.getAttribute(Attribute);
-    const Result = RewriteValue(Attribute, Value, BaseUrl);
-
-    if (Value !== Result) Element.setAttribute(Attribute, Result);
+  function RewriteList(State, Value) {
+    return Value.split(/\s+/)
+      .map((Url) => RewriteUrl(State, Url))
+      .join(" ");
   }
 
-  if (
-    Element.localName === "meta" &&
-    Element.httpEquiv?.toLowerCase() === "refresh"
-  ) {
-    Element.content = Element.content.replace(
-      /(url\s*=\s*)(['"]?)([^'"]+)\2/i,
-      (_, Prefix, Quote, Url) => Prefix + Quote + Rewrite(Url, BaseUrl) + Quote,
+  function RewriteSrcset(State, Value) {
+    return Value.replace(
+      /(\S+)(\s+\d+[wx])?/g,
+      (_, Url, Size = "") => RewriteUrl(State, Url.replace(/,$/, "")) + Size,
     );
   }
 
-  if (Element instanceof Document.defaultView.HTMLIFrameElement)
-    ObserveFrame(Element);
-}
+  function RewriteValue(State, Attribute, Value) {
+    if (Attribute === "srcset" || Attribute === "imagesrcset") {
+      return RewriteSrcset(State, Value);
+    }
 
-function RewriteTree(Node) {
-  if (!(Node instanceof Node.ownerDocument.defaultView.Element)) return;
+    if (Attribute === "ping" || Attribute === "attributionsrc") {
+      return RewriteList(State, Value);
+    }
 
-  RewriteElement(Node);
-  Node.querySelectorAll("*").forEach(RewriteElement);
-}
+    return RewriteUrl(State, Value);
+  }
 
-function ObserveFrame(Frame) {
-  if (Frames.has(Frame)) return;
-  Frames.add(Frame);
+  function RewriteElement(State, Element) {
+    const Document = Element.ownerDocument;
+    const View = Document?.defaultView;
 
-  Frame.addEventListener("load", () => {
+    if (!View || !(Element instanceof View.Element)) return;
+
+    if (
+      Element.tagName === "SCRIPT" &&
+      Element.getAttribute("src")?.includes("_NycuryRuntime.js")
+    ) {
+      Element.remove();
+      return;
+    }
+
+    for (const Attribute of Attributes) {
+      if (!Element.hasAttribute(Attribute)) continue;
+
+      const Value = Element.getAttribute(Attribute);
+      const Result = RewriteValue(State, Attribute, Value);
+
+      if (Value !== Result) {
+        Element.setAttribute(Attribute, Result);
+      }
+    }
+
+    if (
+      Element.localName === "meta" &&
+      Element.httpEquiv?.toLowerCase() === "refresh"
+    ) {
+      Element.content = Element.content.replace(
+        /(url\s*=\s*)(['"]?)([^'"]+)\2/i,
+        (_, Prefix, Quote, Url) =>
+          Prefix + Quote + RewriteUrl(State, Url) + Quote,
+      );
+    }
+
+    if (Element instanceof View.HTMLIFrameElement) {
+      ObserveFrame(Element);
+    }
+  }
+
+  function RewriteTree(State, Node) {
+    const View = Node.ownerDocument?.defaultView;
+    if (!View || !(Node instanceof View.Element)) return;
+
+    RewriteElement(State, Node);
+    Node.querySelectorAll("*").forEach((Element) => {
+      RewriteElement(State, Element);
+    });
+  }
+
+  function ObserveFrame(Frame) {
+    if (Frames.has(Frame)) return;
+    Frames.add(Frame);
+
+    Frame.addEventListener("load", () => {
+      try {
+        const Document = Frame.contentDocument;
+        if (!Document) return;
+
+        const State = {
+          PageUrl: Unproxy(Document.location.href),
+        };
+        InitializeDocument(State, Document);
+        InstallXhr(State, Document.defaultView);
+      } catch {}
+    });
+  }
+
+  function InstallOverrides(State, Document) {
+    const Window = Document.defaultView;
+    if (!Window || InstalledDocuments.has(Document)) return;
+    InstalledDocuments.add(Document);
+
+    const Groups = {
+      HTMLAnchorElement: ["href"],
+      HTMLAreaElement: ["href"],
+      HTMLLinkElement: ["href"],
+      HTMLScriptElement: ["src"],
+      HTMLImageElement: ["src", "srcset"],
+      HTMLSourceElement: ["src", "srcset"],
+      HTMLMediaElement: ["src"],
+      HTMLVideoElement: ["poster"],
+      HTMLIFrameElement: ["src"],
+      HTMLFormElement: ["action"],
+      HTMLInputElement: ["src", "formAction"],
+      HTMLButtonElement: ["formAction"],
+      HTMLObjectElement: ["data"],
+      HTMLQuoteElement: ["cite"],
+      HTMLBaseElement: ["href"],
+      HTMLTrackElement: ["src"],
+    };
+
+    for (const [Name, Properties] of Object.entries(Groups)) {
+      const Prototype = Window[Name]?.prototype;
+      if (!Prototype) continue;
+
+      for (const Property of Properties) {
+        const Descriptor = Object.getOwnPropertyDescriptor(Prototype, Property);
+        if (!Descriptor?.set || !Descriptor.configurable) continue;
+
+        Object.defineProperty(Prototype, Property, {
+          ...Descriptor,
+          set(Value) {
+            if (typeof Value === "string") {
+              Value = RewriteValue(State, Property.toLowerCase(), Value);
+            }
+
+            return Descriptor.set.call(this, Value);
+          },
+        });
+      }
+    }
+
+    const Original = Window.Element.prototype.setAttribute;
+    Window.Element.prototype.setAttribute = function (Name, Value) {
+      Name = String(Name).toLowerCase();
+      if (AttributeSet.has(Name)) {
+        Value = RewriteValue(State, Name, String(Value));
+      }
+
+      return Original.call(this, Name, Value);
+    };
+  }
+
+  function InstallObserver(State, Document) {
+    if (Observers.has(Document)) return;
+
+    const Observer = new Document.defaultView.MutationObserver((Mutations) => {
+      for (const Mutation of Mutations) {
+        if (Mutation.type === "attributes") {
+          RewriteElement(State, Mutation.target);
+        } else {
+          Mutation.addedNodes.forEach((Node) => {
+            RewriteTree(State, Node);
+          });
+        }
+      }
+    });
+
+    Observer.observe(Document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: [...Attributes, "content"],
+    });
+    Observers.set(Document, Observer);
+  }
+
+  function InitializeDocument(State, Document) {
+    if (!Document?.documentElement) return;
+
+    InstallOverrides(State, Document);
+    RewriteTree(State, Document.documentElement);
+    InstallObserver(State, Document);
+  }
+
+  function InstallXhr(State, Window) {
+    if (!Window || InstalledWindows.has(Window)) return;
+    InstalledWindows.add(Window);
+
+    const OriginalXhr = Window.XMLHttpRequest;
+    class NycuryXhr extends OriginalXhr {
+      open(Method, Url, ...Arguments) {
+        Url = RewriteUrl(State, Url);
+        return super.open(Method, Url, ...Arguments);
+      }
+    }
+
+    Window.XMLHttpRequest = NycuryXhr;
+  }
+
+  async function InstallServiceWorker(State) {
+    const Navigator = State.Document.defaultView.navigator;
+    if (!("serviceWorker" in Navigator)) {
+      return "Service Worker isn't supported by browser";
+    }
+
     try {
-      const Document = Frame.contentDocument;
-      if (Document)
-        InitializeDocument(Document, Unproxy(Document.location.href));
-    } catch {}
-  });
-}
+      await Navigator.serviceWorker.register("/_NycuryServiceWorker.js");
+      await Navigator.serviceWorker.ready;
 
-function InstallOverrides(Document) {
-  const Window = Document.defaultView;
-  if (!Window) return;
+      const SendState = () => {
+        Navigator.serviceWorker.controller?.postMessage({
+          Type: "State",
+          Value: {
+            PageUrl: State.PageUrl,
+          },
+        });
+      };
 
-  const Groups = {
-    HTMLAnchorElement: ["href"],
-    HTMLAreaElement: ["href"],
-    HTMLLinkElement: ["href"],
-    HTMLScriptElement: ["src"],
-    HTMLImageElement: ["src", "srcset"],
-    HTMLSourceElement: ["src", "srcset"],
-    HTMLMediaElement: ["src"],
-    HTMLVideoElement: ["poster"],
-    HTMLIFrameElement: ["src"],
-    HTMLFormElement: ["action"],
-    HTMLInputElement: ["src", "formAction"],
-    HTMLButtonElement: ["formAction"],
-    HTMLObjectElement: ["data"],
-    HTMLQuoteElement: ["cite"],
-    HTMLBaseElement: ["href"],
-    HTMLTrackElement: ["src"],
+      SendState();
+      Navigator.serviceWorker.addEventListener("controllerchange", SendState);
+    } catch (Error) {
+      return `Service Worker: ${Error.message}`;
+    }
+  }
+
+  async function Initialize() {
+    if (window.Nycury.Initialized) return;
+    window.Nycury.Initialized = true;
+
+    const Document = window.document;
+    const State = {
+      Document,
+      PageUrl: Unproxy(Document.location.href),
+    };
+
+    InstallXhr(State, window);
+    InitializeDocument(State, Document);
+    await InstallServiceWorker(State);
+    return State;
+  }
+
+  return {
+    Proxy: ProxyOrigin,
+    Unproxy,
+    RewriteUrl,
+    RewriteValue,
+    Initialize,
+    InitializeDocument,
+    InstallXhr,
+    InstallOverrides,
   };
+})();
 
-  for (const [Name, Properties] of Object.entries(Groups)) {
-    const Prototype = Window[Name]?.prototype;
-    if (!Prototype) continue;
-
-    for (const Property of Properties) {
-      const Descriptor = Object.getOwnPropertyDescriptor(Prototype, Property);
-      if (!Descriptor?.set || !Descriptor.configurable) continue;
-
-      Object.defineProperty(Prototype, Property, {
-        ...Descriptor,
-        set(Value) {
-          return Descriptor.set.call(
-            this,
-            typeof Value === "string"
-              ? RewriteValue(
-                  Property.toLowerCase(),
-                  Value,
-                  Base(this.ownerDocument),
-                )
-              : Value,
-          );
-        },
-      });
-    }
-  }
-
-  const Original = Window.Element.prototype.setAttribute;
-
-  Window.Element.prototype.setAttribute = function (Name, Value) {
-    Name = String(Name).toLowerCase();
-
-    if (Attributes.includes(Name))
-      Value = RewriteValue(Name, String(Value), Base(this.ownerDocument));
-
-    return Original.call(this, Name, Value);
-  };
-}
-
-function InitializeDocument(Document, BaseUrl) {
-  if (!Document?.documentElement) return;
-
-  Bases.set(Document, BaseUrl);
-  InstallOverrides(Document);
-  RewriteTree(Document.documentElement);
-
-  if (Observers.has(Document)) return;
-
-  const Observer = new Document.defaultView.MutationObserver((Mutations) => {
-    for (const Mutation of Mutations) {
-      if (Mutation.type === "attributes") RewriteElement(Mutation.target);
-      else Mutation.addedNodes.forEach(RewriteTree);
-    }
-  });
-
-  Observer.observe(Document.documentElement, {
-    subtree: true,
-    childList: true,
-    attributes: true,
-    attributeFilter: [...Attributes, "content"],
-  });
-
-  Observers.set(Document, Observer);
-}
-
-function OverrideXhr(BaseUrl) {
-  class NycuryXhr extends OriginalXhr {
-    open(Method, _Url, ...Arguments) {
-      const Url = new URL(_Url, BaseUrl);
-      const Target = new URL(Url.pathname + Url.search, BaseUrl);
-      const ProxyUrl = window._NycuryProxy + Target.href;
-
-      return super.open(Method, ProxyUrl, ...Arguments);
-    }
-
-    send(...Arguments) {
-      return super.send(...Arguments);
-    }
-  }
-
-  window.XMLHttpRequest = NycuryXhr;
-}
-
-async function Initialize() {
-  if (!("serviceWorker" in navigator)) return;
-  if (window._NycuryInitialized) {
-    return;
-  }
-
-  window._NycuryInitialized = true;
-
-  try {
-    await navigator.serviceWorker.register("/_NycuryServiceWorker.js");
-    const Registration = await navigator.serviceWorker.ready;
-
-    const SendBase = () =>
-      navigator.serviceWorker.controller?.postMessage({
-        Type: "SetBaseUrl",
-        BaseUrl,
-      });
-
-    SendBase();
-    navigator.serviceWorker.addEventListener("controllerchange", SendBase);
-  } catch {}
-
-  const BaseUrl = Unproxy(location.href);
-  OverrideXhr(BaseUrl);
-  InitializeDocument(document, BaseUrl);
-}
-
-Initialize();
+window.Nycury = Nycury;
+Nycury.Initialize();
