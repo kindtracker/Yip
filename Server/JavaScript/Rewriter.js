@@ -145,8 +145,6 @@ async function RewriteJavaScript(Source) {
   });
 
   return Result.code;
-
-  return Code;
 }
 
 module.exports = RewriteJavaScript;
