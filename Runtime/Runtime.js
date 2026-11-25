@@ -266,10 +266,8 @@ const Nycury = (() => {
 
       const SendState = () => {
         Navigator.serviceWorker.controller?.postMessage({
-          Type: "State",
-          Value: {
-            PageUrl: State.PageUrl,
-          },
+          Type: "SetPageUrl",
+          Value: State.PageUrl,
         });
       };
 

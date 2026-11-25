@@ -1,3 +1,6 @@
+const ProxyOrigin = "http://localhost:8000/";
+const PageUrls = new Map();
+
 self.addEventListener("message", (Event) => {
   if (Event.data?.Type === "SetPageUrl" && Event.source?.id)
     PageUrls.set(Event.source.id, Event.data.Value);
@@ -12,9 +15,8 @@ self.addEventListener("activate", (Event) =>
 
 self.addEventListener("fetch", (Event) => {
   const Url = new URL(Event.request.url);
-
   if (
-    Url.origin !== Origin ||
+    Url.origin !== new URL(ProxyOrigin).origin ||
     Url.pathname.includes("_Nycury") ||
     /^\/https?:\/\//i.test(Url.pathname)
   )
@@ -22,19 +24,29 @@ self.addEventListener("fetch", (Event) => {
 
   Event.respondWith(
     (async () => {
-      let Base = Bases.get(Event.clientId);
+      let PageUrl = PageUrls.get(Event.clientId);
 
-      if (!Base && Event.clientId) {
+      if (!PageUrl && Event.clientId) {
         const Client = await self.clients.get(Event.clientId);
-        const Path = new URL(Client?.url || "http://invalid").pathname.slice(1);
-
-        if (/^https?:\/\//i.test(Path)) Base = Path;
+        const Path = Client?.url ? new URL(Client.url).pathname.slice(1) : "";
+        if (/^https?:\/\//i.test(Path)) {
+          PageUrl = Path;
+        }
       }
 
-      if (!Base) return fetch(Event.request);
+      if (!PageUrl)
+        Event.respondWith(
+          (async () => {
+            if (!PageUrl) {
+              throw new Error(
+                "Nycury Runtime did not send PageUrl to service worker",
+              );
+            }
+          })(),
+        );
 
-      const Target = new URL(Url.pathname + Url.search, Base);
-      return fetch(new Request(Proxy + Target.href, Event.request));
+      const Target = new URL(Url.pathname + Url.search, PageUrl);
+      return fetch(new Request(ProxyOrigin + Target.href, Event.request));
     })(),
   );
 });
